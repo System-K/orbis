@@ -18,7 +18,7 @@ and high-resolution tile zoom — all in real time.
 - **Real-time day/night cycle** — Astronomically accurate sun position (Jean Meeus)
 - **Smooth terminator** — 6° twilight zone with smoothstep blending
 - **Atmospheric glow** — Fresnel effect at the globe's rim
-- **High-resolution tile zoom** — Sentinel-2 Cloudless, OpenStreetMap, and NASA GIBS tiles with smooth crossfade
+- **High-resolution tile zoom(WIP)** — Sentinel-2 Cloudless, OpenStreetMap, and NASA GIBS tiles with smooth crossfade
 
 ### Satellite Data
 - **NASA Blue Marble** — Day texture (vegetation, landmass, ocean)
