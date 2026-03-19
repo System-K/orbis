@@ -1,0 +1,99 @@
+{
+    "_meta": {
+        "language": "العربية",
+        "code": "ar",
+        "direction": "rtl"
+    },
+
+    "app_title": "🛰 Orbis",
+
+    "view_globe": "🌍 الكرة الأرضية",
+    "view_globe_active": "● 🌍 الكرة الأرضية",
+    "view_map": "🗺 الخريطة",
+    "view_map_active": "● 🗺 الخريطة",
+
+    "layers_heading": "📡 الطبقات",
+    "layers_opacity": "الشفافية",
+    "layers_none": "لم يتم تحميل أي طبقة",
+    "layer_add": "إضافة طبقة",
+    "layer_remove": "إزالة الطبقة",
+
+    "catalog_title": "كتالوج الطبقات",
+    "catalog_back": "رجوع",
+    "catalog_description": "اختر مصدر بيانات لإضافته كطبقة.",
+
+    "cat_satellite": "🛰 الأقمار الصناعية",
+    "cat_atmosphere": "🌫 الغلاف الجوي",
+    "cat_ocean": "🌊 المحيط",
+    "cat_land": "🌿 اليابسة",
+    "cat_climate": "🌡 المناخ",
+    "cat_ice": "❄ الجليد",
+    "cat_basemap": "🗺 الخريطة الأساسية",
+    "cat_weather": "⛅ الطقس",
+    "cat_geology": "🪨 الجيولوجيا",
+
+    "time_heading": "🕐 التحكم بالوقت",
+    "time_live": "🔴 مباشر",
+    "time_manual": "⏸ يدوي",
+    "time_utc_label": "الوقت (UTC):",
+
+    "gibs_downloading": "⏳ GIBS: جاري تحميل بيانات الأقمار الصناعية...",
+    "gibs_ready": "✅ GIBS: {}",
+    "gibs_error": "❌ GIBS: {}",
+    "gibs_attribution": "NASA GIBS / ESDIS",
+
+    "shortcuts": "L = اللوحة | R = إعادة تعيين | T = الوقت | M = الخريطة | G = التسميات | K = المفتاح",
+    "panel_tooltip": "لوحة الطبقات (L)",
+
+    "layer_grid": "شبكة الإحداثيات",
+
+    "geojson_heading": "📍 GeoJSON",
+    "geojson_show_labels": "إظهار التسميات",
+    "geojson_no_layers": "لم يتم تحميل طبقات GeoJSON",
+    "geojson_load": "📂 تحميل GeoJSON...",
+    "geojson_dragdrop": "أو اسحب ملفات .geojson إلى هنا",
+    "geojson_toggle": "تبديل الرؤية",
+    "geojson_remove": "إزالة الطبقة",
+
+    "live_heading": "📡 بيانات مباشرة",
+    "live_start": "بدء المصدر",
+    "live_stop": "إيقاف المصدر",
+    "live_none_active": "لا توجد مصادر نشطة",
+    "cat_seismic": "🌋 زلزالي",
+    "cat_aviation": "✈ طيران",
+    "live_opensky_metered": "⚠ OpenSky: 400 رصيد/يوم (مجهول). قد تتوقف البيانات عند الاستخدام المكثف.",
+
+    "settings_heading": "⚙ الإعدادات",
+    "settings_projection": "الإسقاط:",
+    "settings_proj_ortho": "مسطح",
+    "settings_proj_persp": "3D",
+    "settings_invert_x": "عكس الفأرة أفقياً",
+    "settings_invert_y": "عكس الفأرة عمودياً",
+
+    "legend_title": "المفتاح",
+    "legend_earthquakes": "الزلازل (القوة)",
+    "legend_aircraft": "الطائرات (الارتفاع)",
+    "legend_volcanoes": "البراكين (آخر ثوران)",
+    "legend_nuclear": "محطات نووية (العمر)",
+    "legend_tectonic": "الصفائح التكتونية",
+    "legend_plate_fill": "مساحة الصفيحة",
+    "legend_plate_boundary": "حدود الصفيحة",
+
+    "legend_satellites": "الأقمار الصناعية (المدار)",
+    "legend_sat_position": "الموقع الحالي",
+    "legend_sat_past": "المسار السابق (90 دقيقة)",
+    "legend_sat_future": "المسار المستقبلي (90 دقيقة)",
+
+    "sat_heading": "🛰 الأقمار الصناعية",
+    "sat_show": "إظهار الأقمار الصناعية",
+    "sat_downloading": "جاري تحميل بيانات المدار...",
+    "sat_no_data": "لا توجد بيانات أقمار صناعية",
+    "sat_tracked": "قمر صناعي متتبع",
+    "sat_click_hint": "انقر للمتابعة:",
+    "sat_follow_tooltip": "انقر لمتابعة هذا القمر الصناعي",
+    "sat_unfollow_tooltip": "انقر لإيقاف المتابعة",
+    "sat_follow_hint": "اسحب الكرة الأرضية لإيقاف التتبع",
+
+    "label_click_expand": "انقر لتوسيع/طي المجموعة",
+    "label_copied": "تم النسخ إلى الحافظة"
+}

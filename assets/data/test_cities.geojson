@@ -1,0 +1,121 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [13.405, 52.52] },
+      "properties": { "name": "Berlin", "marker-color": "#ff3300", "marker-size": "large" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [2.3522, 48.8566] },
+      "properties": { "name": "Paris", "marker-color": "#0055ff", "marker-size": "large" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [-73.9857, 40.7484] },
+      "properties": { "name": "New York", "marker-color": "#00cc44", "marker-size": "large" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [139.6917, 35.6895] },
+      "properties": { "name": "Tokyo", "marker-color": "#ff00aa", "marker-size": "large" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [37.6173, 55.7558] },
+      "properties": { "name": "Moscow", "marker-color": "#ffcc00", "marker-size": "medium" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [-43.1729, -22.9068] },
+      "properties": { "name": "Rio de Janeiro", "marker-color": "#00ccff", "marker-size": "medium" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [28.9784, -26.2041] },
+      "properties": { "name": "Johannesburg", "marker-color": "#ff8800", "marker-size": "medium" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [151.2093, -33.8688] },
+      "properties": { "name": "Sydney", "marker-color": "#aa00ff", "marker-size": "medium" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [0, 0] },
+      "properties": { "name": "Null Island", "marker-color": "#ffffff", "marker-size": "small" }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[13.405, 52.52], [2.3522, 48.8566]]
+      },
+      "properties": { "name": "Berlin > Paris", "stroke": "#ffff00", "stroke-width": 2, "stroke-opacity": 0.9 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[2.3522, 48.8566], [-73.9857, 40.7484]]
+      },
+      "properties": { "name": "Paris > New York", "stroke": "#00ffaa", "stroke-width": 2, "stroke-opacity": 0.9 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[-73.9857, 40.7484], [139.6917, 35.6895]]
+      },
+      "properties": { "name": "New York > Tokyo", "stroke": "#ff66aa", "stroke-width": 2, "stroke-opacity": 0.9 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[139.6917, 35.6895], [151.2093, -33.8688]]
+      },
+      "properties": { "name": "Tokyo > Sydney", "stroke": "#aa66ff", "stroke-width": 2, "stroke-opacity": 0.9 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[151.2093, -33.8688], [28.9784, -26.2041], [-43.1729, -22.9068]]
+      },
+      "properties": { "name": "Sydney > Johannesburg > Rio", "stroke": "#ff8800", "stroke-width": 2, "stroke-opacity": 0.9 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [5.87, 47.27], [7.51, 47.49], [10.45, 47.56], [13.84, 48.77],
+          [14.68, 50.08], [14.99, 51.04], [14.33, 52.31], [14.12, 53.92],
+          [11.31, 54.89], [8.90, 54.90], [8.59, 53.59], [6.66, 53.71],
+          [5.99, 51.04], [6.04, 50.13], [6.36, 49.46], [7.59, 48.06],
+          [5.87, 47.27]
+        ]]
+      },
+      "properties": { "name": "Germany (approx)", "fill": "#ffcc00", "fill-opacity": 0.3, "stroke": "#ffcc00", "stroke-width": 1.5, "stroke-opacity": 0.8 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-73.98, 5.27], [-60.0, 5.27], [-51.08, 4.0], [-44.43, -2.69],
+          [-34.79, -7.26], [-34.87, -12.25], [-38.51, -13.51], [-39.00, -17.70],
+          [-40.27, -20.31], [-41.00, -22.96], [-44.64, -23.36], [-48.55, -25.89],
+          [-48.55, -28.63], [-50.37, -30.00], [-53.37, -33.74], [-53.65, -32.73],
+          [-57.63, -30.22], [-56.29, -25.97], [-57.80, -20.00], [-58.17, -16.30],
+          [-60.00, -14.00], [-61.08, -13.49], [-64.00, -12.46], [-65.39, -9.76],
+          [-69.47, -1.01], [-69.93, 1.77], [-67.00, 2.25], [-63.37, 3.77],
+          [-60.00, 5.00], [-73.98, 5.27]
+        ]]
+      },
+      "properties": { "name": "Brazil (approx)", "fill": "#009739", "fill-opacity": 0.25, "stroke": "#009739", "stroke-width": 1.5, "stroke-opacity": 0.8 }
+    }
+  ]
+}

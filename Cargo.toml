@@ -1,0 +1,28 @@
+[package]
+name = "orbis"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "A modern, lightweight real-time Earth viewer with day/night cycle and cloud patterns"
+repository = "https://github.com/System-K/orbis"
+
+[dependencies]
+wgpu = "27"
+winit = "0.30"
+pollster = "0.4"            # Blockiert auf async — wgpu ist async, winit nicht
+env_logger = "0.11"
+log = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.29"
+image = "0.25"           # Textur-Dateien laden (PNG, JPEG, etc.)
+chrono = "0.4"            # UTC-Zeit für Sonnenpositionsberechnung
+serde = { version = "1", features = ["derive"] }  # Serialisierung für Settings
+serde_json = "1"          # JSON-Format für Settings-Datei
+ureq = "3"                # HTTP-Client für GIBS-Tile-Downloads (leichtgewichtig, blocking)
+egui = "0.33"             # Immediate-Mode GUI
+egui-winit = "0.33"       # egui ↔ winit Event-Brücke
+egui-wgpu = "0.33"        # egui ↔ wgpu Renderer
+rand = "0.9"               # Zufallszahlen für Sternenfeld-Generierung
+earcutr = "0.4"            # Polygon-Triangulation (Earcut-Algorithmus)
+rfd = "0.15"               # Native File-Dialog (Open/Save)
+sgp4 = { version = "2", features = ["serde"] }  # SGP4/SDP4 Satelliten-Propagation + OMM-Parsing

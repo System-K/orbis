@@ -1,0 +1,99 @@
+{
+    "_meta": {
+        "language": "中文",
+        "code": "zh",
+        "direction": "ltr"
+    },
+
+    "app_title": "🛰 Orbis",
+
+    "view_globe": "🌍 地球仪",
+    "view_globe_active": "● 🌍 地球仪",
+    "view_map": "🗺 地图",
+    "view_map_active": "● 🗺 地图",
+
+    "layers_heading": "📡 图层",
+    "layers_opacity": "不透明度",
+    "layers_none": "未加载图层",
+    "layer_add": "添加图层",
+    "layer_remove": "移除图层",
+
+    "catalog_title": "图层目录",
+    "catalog_back": "返回",
+    "catalog_description": "选择数据源作为叠加层。",
+
+    "cat_satellite": "🛰 卫星",
+    "cat_atmosphere": "🌫 大气",
+    "cat_ocean": "🌊 海洋",
+    "cat_land": "🌿 陆地",
+    "cat_climate": "🌡 气候",
+    "cat_ice": "❄ 冰雪",
+    "cat_basemap": "🗺 底图",
+    "cat_weather": "⛅ 天气",
+    "cat_geology": "🪨 地质",
+
+    "time_heading": "🕐 时间控制",
+    "time_live": "🔴 实时",
+    "time_manual": "⏸ 手动",
+    "time_utc_label": "时间 (UTC)：",
+
+    "gibs_downloading": "⏳ GIBS：正在加载卫星数据...",
+    "gibs_ready": "✅ GIBS：{}",
+    "gibs_error": "❌ GIBS：{}",
+    "gibs_attribution": "NASA GIBS / ESDIS",
+
+    "shortcuts": "L = 面板 | R = 重置 | T = 时间 | M = 地图 | G = 标签 | K = 图例",
+    "panel_tooltip": "图层面板 (L)",
+
+    "layer_grid": "坐标网格",
+
+    "geojson_heading": "📍 GeoJSON",
+    "geojson_show_labels": "显示标签",
+    "geojson_no_layers": "未加载 GeoJSON 图层",
+    "geojson_load": "📂 加载 GeoJSON...",
+    "geojson_dragdrop": "或将 .geojson 文件拖放到此处",
+    "geojson_toggle": "切换可见性",
+    "geojson_remove": "移除图层",
+
+    "live_heading": "📡 实时数据",
+    "live_start": "启动数据源",
+    "live_stop": "停止数据源",
+    "live_none_active": "无活动数据源",
+    "cat_seismic": "🌋 地震",
+    "cat_aviation": "✈ 航空",
+    "live_opensky_metered": "⚠ OpenSky：每天400积分（匿名）。大量使用后数据可能中断。",
+
+    "settings_heading": "⚙ 设置",
+    "settings_projection": "投影：",
+    "settings_proj_ortho": "平面",
+    "settings_proj_persp": "3D",
+    "settings_invert_x": "反转水平鼠标",
+    "settings_invert_y": "反转垂直鼠标",
+
+    "legend_title": "图例",
+    "legend_earthquakes": "地震（震级）",
+    "legend_aircraft": "飞机（高度）",
+    "legend_volcanoes": "火山（最近喷发）",
+    "legend_nuclear": "核电站（建造年龄）",
+    "legend_tectonic": "板块构造",
+    "legend_plate_fill": "板块区域",
+    "legend_plate_boundary": "板块边界",
+
+    "legend_satellites": "卫星（轨道）",
+    "legend_sat_position": "当前位置",
+    "legend_sat_past": "过去轨迹 (90 分钟)",
+    "legend_sat_future": "未来轨迹 (90 分钟)",
+
+    "sat_heading": "🛰 卫星",
+    "sat_show": "显示卫星",
+    "sat_downloading": "正在下载轨道数据...",
+    "sat_no_data": "无卫星数据",
+    "sat_tracked": "颗卫星跟踪中",
+    "sat_click_hint": "点击跟踪：",
+    "sat_follow_tooltip": "点击跟踪该卫星",
+    "sat_unfollow_tooltip": "点击停止跟踪",
+    "sat_follow_hint": "拖动地球停止跟踪",
+
+    "label_click_expand": "点击展开/收起群组",
+    "label_copied": "已复制到剪贴板"
+}

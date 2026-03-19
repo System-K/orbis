@@ -1,0 +1,108 @@
+{
+    "_meta": {
+        "language": "English",
+        "code": "en",
+        "direction": "ltr"
+    },
+
+    "app_title": "🛰 Orbis",
+
+    "view_globe": "🌍 Globe",
+    "view_globe_active": "● 🌍 Globe",
+    "view_map": "🗺 Map",
+    "view_map_active": "● 🗺 Map",
+
+    "layers_heading": "📡 Layers",
+    "layers_opacity": "Opacity",
+    "layers_none": "No layers loaded",
+    "layer_add": "Add Layer",
+    "layer_remove": "Remove layer",
+
+    "catalog_title": "Layer Catalog",
+    "catalog_back": "Back",
+    "catalog_description": "Select a data source to add as overlay.",
+
+    "cat_satellite": "🛰 Satellite",
+    "cat_atmosphere": "🌫 Atmosphere",
+    "cat_ocean": "🌊 Ocean",
+    "cat_land": "🌿 Land",
+    "cat_climate": "🌡 Climate",
+    "cat_ice": "❄ Ice",
+    "cat_basemap": "🗺 Basemap",
+    "cat_weather": "⛅ Weather",
+    "cat_geology": "🪨 Geology",
+
+    "time_heading": "🕐 Time Control",
+    "time_live": "🔴 Live",
+    "time_manual": "⏸ Manual",
+    "time_utc_label": "Time (UTC):",
+
+    "gibs_downloading": "⏳ GIBS: Loading satellite data...",
+    "gibs_ready": "✅ GIBS: {}",
+    "gibs_error": "❌ GIBS: {}",
+    "gibs_attribution": "NASA GIBS / ESDIS",
+
+    "shortcuts": "L = Panel | R = Reset | T = Time | M = Map | G = Labels | K = Legend",
+    "panel_tooltip": "Layer Panel (L)",
+
+    "layer_grid": "Coordinate Grid",
+
+    "geojson_heading": "📍 GeoJSON",
+    "geojson_show_labels": "Show Labels",
+    "geojson_no_layers": "No GeoJSON layers loaded",
+    "geojson_load": "📂 Load GeoJSON...",
+    "geojson_dragdrop": "or drag & drop .geojson files",
+    "geojson_toggle": "Toggle visibility",
+    "geojson_remove": "Remove layer",
+
+    "live_heading": "📡 Live Data",
+    "live_start": "Start live feed",
+    "live_stop": "Stop live feed",
+    "live_none_active": "No live sources active",
+    "cat_seismic": "🌋 Seismic",
+    "cat_aviation": "✈ Aviation",
+    "live_opensky_metered": "⚠ OpenSky: 400 credits/day (anonymous). Data may stop after heavy use.",
+
+    "settings_heading": "⚙ Settings",
+    "settings_projection": "Projection:",
+    "settings_proj_ortho": "Flat",
+    "settings_proj_persp": "3D",
+    "settings_invert_x": "Invert horizontal mouse",
+    "settings_invert_y": "Invert vertical mouse",
+
+    "legend_title": "Legend",
+    "legend_earthquakes": "Earthquakes (Magnitude)",
+    "legend_aircraft": "Aircraft (Altitude)",
+    "legend_volcanoes": "Volcanoes (Last Eruption)",
+    "legend_nuclear": "Nuclear Plants (Age)",
+    "legend_tectonic": "Tectonic Plates",
+    "legend_plate_fill": "Plate area",
+    "legend_plate_boundary": "Plate boundary",
+
+    "legend_satellites": "Satellites (Orbit)",
+    "legend_sat_position": "Current position",
+    "legend_sat_past": "Past track (90 min)",
+    "legend_sat_future": "Future track (90 min)",
+
+    "sat_heading": "🛰 Satellites",
+    "sat_show": "Show satellites",
+    "sat_downloading": "Downloading orbital data...",
+    "sat_no_data": "No satellite data",
+    "sat_tracked": "satellites tracked",
+    "sat_click_hint": "Click to follow:",
+    "sat_follow_tooltip": "Click to follow this satellite",
+    "sat_unfollow_tooltip": "Click to stop following",
+    "sat_follow_hint": "Drag globe to stop following",
+
+    "label_click_expand": "Click to expand/collapse cluster",
+    "label_copied": "Copied to clipboard",
+
+    "cache_heading": "Tile Cache",
+    "cache_max_size": "Max size (MB):",
+    "cache_max_age": "Max age (days):",
+    "cache_age_forever": "∞ (forever)",
+    "cache_usage": "Usage:",
+    "cache_clear": "Clear cache",
+    "cache_cleared": "Cache cleared",
+    "tile_source_label": "Zoom imagery:"
+}

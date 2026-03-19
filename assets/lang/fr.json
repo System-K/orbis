@@ -1,0 +1,99 @@
+{
+    "_meta": {
+        "language": "Français",
+        "code": "fr",
+        "direction": "ltr"
+    },
+
+    "app_title": "🛰 Orbis",
+
+    "view_globe": "🌍 Globe",
+    "view_globe_active": "● 🌍 Globe",
+    "view_map": "🗺 Carte",
+    "view_map_active": "● 🗺 Carte",
+
+    "layers_heading": "📡 Couches",
+    "layers_opacity": "Opacité",
+    "layers_none": "Aucune couche chargée",
+    "layer_add": "Ajouter une couche",
+    "layer_remove": "Supprimer la couche",
+
+    "catalog_title": "Catalogue de couches",
+    "catalog_back": "Retour",
+    "catalog_description": "Sélectionnez une source de données à superposer.",
+
+    "cat_satellite": "🛰 Satellite",
+    "cat_atmosphere": "🌫 Atmosphère",
+    "cat_ocean": "🌊 Océan",
+    "cat_land": "🌿 Terre",
+    "cat_climate": "🌡 Climat",
+    "cat_ice": "❄ Glace",
+    "cat_basemap": "🗺 Carte de base",
+    "cat_weather": "⛅ Météo",
+    "cat_geology": "🪨 Géologie",
+
+    "time_heading": "🕐 Contrôle du temps",
+    "time_live": "🔴 En direct",
+    "time_manual": "⏸ Manuel",
+    "time_utc_label": "Heure (UTC) :",
+
+    "gibs_downloading": "⏳ GIBS : Chargement des données satellite...",
+    "gibs_ready": "✅ GIBS : {}",
+    "gibs_error": "❌ GIBS : {}",
+    "gibs_attribution": "NASA GIBS / ESDIS",
+
+    "shortcuts": "L = Panneau | R = Réinitialiser | T = Temps | M = Carte | G = Labels | K = Légende",
+    "panel_tooltip": "Panneau de couches (L)",
+
+    "layer_grid": "Grille de coordonnées",
+
+    "geojson_heading": "📍 GeoJSON",
+    "geojson_show_labels": "Afficher les étiquettes",
+    "geojson_no_layers": "Aucune couche GeoJSON chargée",
+    "geojson_load": "📂 Charger GeoJSON...",
+    "geojson_dragdrop": "ou glisser-déposer des fichiers .geojson",
+    "geojson_toggle": "Basculer la visibilité",
+    "geojson_remove": "Supprimer la couche",
+
+    "live_heading": "📡 Données en direct",
+    "live_start": "Démarrer le flux",
+    "live_stop": "Arrêter le flux",
+    "live_none_active": "Aucune source active",
+    "cat_seismic": "🌋 Sismique",
+    "cat_aviation": "✈ Aviation",
+    "live_opensky_metered": "⚠ OpenSky : 400 crédits/jour (anonyme). Données limitées en cas d’usage intensif.",
+
+    "settings_heading": "⚙ Paramètres",
+    "settings_projection": "Projection :",
+    "settings_proj_ortho": "Plat",
+    "settings_proj_persp": "3D",
+    "settings_invert_x": "Inverser la souris horizontale",
+    "settings_invert_y": "Inverser la souris verticale",
+
+    "legend_title": "Légende",
+    "legend_earthquakes": "Séismes (Magnitude)",
+    "legend_aircraft": "Avions (Altitude)",
+    "legend_volcanoes": "Volcans (Dernière éruption)",
+    "legend_nuclear": "Centrales nucléaires (Âge)",
+    "legend_tectonic": "Plaques tectoniques",
+    "legend_plate_fill": "Surface de plaque",
+    "legend_plate_boundary": "Limite de plaque",
+
+    "legend_satellites": "Satellites (Orbite)",
+    "legend_sat_position": "Position actuelle",
+    "legend_sat_past": "Trajectoire passée (90 min)",
+    "legend_sat_future": "Trajectoire future (90 min)",
+
+    "sat_heading": "🛰 Satellites",
+    "sat_show": "Afficher les satellites",
+    "sat_downloading": "Téléchargement des données orbitales...",
+    "sat_no_data": "Aucune donnée satellite",
+    "sat_tracked": "satellites suivis",
+    "sat_click_hint": "Cliquer pour suivre :",
+    "sat_follow_tooltip": "Cliquer pour suivre ce satellite",
+    "sat_unfollow_tooltip": "Cliquer pour arrêter le suivi",
+    "sat_follow_hint": "Faire glisser le globe pour arrêter le suivi",
+
+    "label_click_expand": "Cliquer pour déplier/replier",
+    "label_copied": "Copié dans le presse-papiers"
+}

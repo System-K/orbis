@@ -1,0 +1,99 @@
+{
+    "_meta": {
+        "language": "हिन्दी",
+        "code": "hi",
+        "direction": "ltr"
+    },
+
+    "app_title": "🛰 Orbis",
+
+    "view_globe": "🌍 ग्लोब",
+    "view_globe_active": "● 🌍 ग्लोब",
+    "view_map": "🗺 मानचित्र",
+    "view_map_active": "● 🗺 मानचित्र",
+
+    "layers_heading": "📡 परतें",
+    "layers_opacity": "अपारदर्शिता",
+    "layers_none": "कोई परत लोड नहीं",
+    "layer_add": "परत जोड़ें",
+    "layer_remove": "परत हटाएँ",
+
+    "catalog_title": "परत सूची",
+    "catalog_back": "वापस",
+    "catalog_description": "ओवरले के रूप में जोड़ने के लिए डेटा स्रोत चुनें।",
+
+    "cat_satellite": "🛰 उपग्रह",
+    "cat_atmosphere": "🌫 वायुमंडल",
+    "cat_ocean": "🌊 महासागर",
+    "cat_land": "🌿 भूमि",
+    "cat_climate": "🌡 जलवायु",
+    "cat_ice": "❄ बर्फ",
+    "cat_basemap": "🗺 आधार मानचित्र",
+    "cat_weather": "⛅ मौसम",
+    "cat_geology": "🪨 भूविज्ञान",
+
+    "time_heading": "🕐 समय नियंत्रण",
+    "time_live": "🔴 लाइव",
+    "time_manual": "⏸ मैनुअल",
+    "time_utc_label": "समय (UTC):",
+
+    "gibs_downloading": "⏳ GIBS: उपग्रह डेटा लोड हो रहा है...",
+    "gibs_ready": "✅ GIBS: {}",
+    "gibs_error": "❌ GIBS: {}",
+    "gibs_attribution": "NASA GIBS / ESDIS",
+
+    "shortcuts": "L = पैनल | R = रीसेट | T = समय | M = मानचित्र | G = लेबल | K = संकेत",
+    "panel_tooltip": "परत पैनल (L)",
+
+    "layer_grid": "निर्देशांक ग्रिड",
+
+    "geojson_heading": "📍 GeoJSON",
+    "geojson_show_labels": "लेबल दिखाएं",
+    "geojson_no_layers": "कोई GeoJSON परत लोड नहीं",
+    "geojson_load": "📂 GeoJSON लोड करें...",
+    "geojson_dragdrop": "या .geojson फ़ाइलें यहां खींचें",
+    "geojson_toggle": "दृश्यता बदलें",
+    "geojson_remove": "परत हटाएं",
+
+    "live_heading": "📡 लाइव डेटा",
+    "live_start": "स्रोत शुरू करें",
+    "live_stop": "स्रोत बंद करें",
+    "live_none_active": "कोई सक्रिय स्रोत नहीं",
+    "cat_seismic": "🌋 भूकंप",
+    "cat_aviation": "✈ विमानन",
+    "live_opensky_metered": "⚠ OpenSky: 400 क्रेडिट/दिन (अनाम)। अधिक उपयोग पर डेटा रुक सकता है।",
+
+    "settings_heading": "⚙ सेटिंग्स",
+    "settings_projection": "प्रक्षेपण:",
+    "settings_proj_ortho": "समतल",
+    "settings_proj_persp": "3D",
+    "settings_invert_x": "क्षैतिज माउस उलटें",
+    "settings_invert_y": "लंबवत माउस उलटें",
+
+    "legend_title": "संकेत",
+    "legend_earthquakes": "भूकंप (तीव्रता)",
+    "legend_aircraft": "विमान (ऊँचाई)",
+    "legend_volcanoes": "ज्वालामुखी (अंतिम विस्फोट)",
+    "legend_nuclear": "परमाणु संयंत्र (आयु)",
+    "legend_tectonic": "विवर्तनिक प्लेटें",
+    "legend_plate_fill": "प्लेट क्षेत्र",
+    "legend_plate_boundary": "प्लेट सीमा",
+
+    "legend_satellites": "उपग्रह (कक्षा)",
+    "legend_sat_position": "वर्तमान स्थिति",
+    "legend_sat_past": "पिछला पथ (90 मिनट)",
+    "legend_sat_future": "भविष्य पथ (90 मिनट)",
+
+    "sat_heading": "🛰 उपग्रह",
+    "sat_show": "उपग्रह दिखाएं",
+    "sat_downloading": "कक्षीय डेटा डाउनलोड हो रहा है...",
+    "sat_no_data": "कोई उपग्रह डेटा नहीं",
+    "sat_tracked": "उपग्रह ट्रैक किए जा रहे हैं",
+    "sat_click_hint": "ट्रैक करने के लिए क्लिक करें:",
+    "sat_follow_tooltip": "इस उपग्रह को ट्रैक करने के लिए क्लिक करें",
+    "sat_unfollow_tooltip": "ट्रैकिंग रोकने के लिए क्लिक करें",
+    "sat_follow_hint": "ट्रैकिंग रोकने के लिए ग्लोब खींचें",
+
+    "label_click_expand": "समूह खोलने/बंद करने के लिए क्लिक करें",
+    "label_copied": "क्लिपबोर्ड में कॉपी किया"
+}

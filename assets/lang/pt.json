@@ -1,0 +1,99 @@
+{
+    "_meta": {
+        "language": "Português",
+        "code": "pt",
+        "direction": "ltr"
+    },
+
+    "app_title": "🛰 Orbis",
+
+    "view_globe": "🌍 Globo",
+    "view_globe_active": "● 🌍 Globo",
+    "view_map": "🗺 Mapa",
+    "view_map_active": "● 🗺 Mapa",
+
+    "layers_heading": "📡 Camadas",
+    "layers_opacity": "Opacidade",
+    "layers_none": "Nenhuma camada carregada",
+    "layer_add": "Adicionar camada",
+    "layer_remove": "Remover camada",
+
+    "catalog_title": "Catálogo de camadas",
+    "catalog_back": "Voltar",
+    "catalog_description": "Selecione uma fonte de dados como sobreposição.",
+
+    "cat_satellite": "🛰 Satélite",
+    "cat_atmosphere": "🌫 Atmosfera",
+    "cat_ocean": "🌊 Oceano",
+    "cat_land": "🌿 Terra",
+    "cat_climate": "🌡 Clima",
+    "cat_ice": "❄ Gelo",
+    "cat_basemap": "🗺 Mapa base",
+    "cat_weather": "⛅ Meteorologia",
+    "cat_geology": "🪨 Geologia",
+
+    "time_heading": "🕐 Controlo de tempo",
+    "time_live": "🔴 Ao vivo",
+    "time_manual": "⏸ Manual",
+    "time_utc_label": "Hora (UTC):",
+
+    "gibs_downloading": "⏳ GIBS: A carregar dados de satélite...",
+    "gibs_ready": "✅ GIBS: {}",
+    "gibs_error": "❌ GIBS: {}",
+    "gibs_attribution": "NASA GIBS / ESDIS",
+
+    "shortcuts": "L = Painel | R = Repor | T = Tempo | M = Mapa | G = Labels | K = Legenda",
+    "panel_tooltip": "Painel de camadas (L)",
+
+    "layer_grid": "Grelha de coordenadas",
+
+    "geojson_heading": "📍 GeoJSON",
+    "geojson_show_labels": "Mostrar rótulos",
+    "geojson_no_layers": "Nenhuma camada GeoJSON carregada",
+    "geojson_load": "📂 Carregar GeoJSON...",
+    "geojson_dragdrop": "ou arraste ficheiros .geojson para aqui",
+    "geojson_toggle": "Alternar visibilidade",
+    "geojson_remove": "Remover camada",
+
+    "live_heading": "📡 Dados ao vivo",
+    "live_start": "Iniciar fonte",
+    "live_stop": "Parar fonte",
+    "live_none_active": "Sem fontes ativas",
+    "cat_seismic": "🌋 Sísmica",
+    "cat_aviation": "✈ Aviação",
+    "live_opensky_metered": "⚠ OpenSky: 400 créditos/dia (anónimo). Dados podem parar com uso intensivo.",
+
+    "settings_heading": "⚙ Configurações",
+    "settings_projection": "Projeção:",
+    "settings_proj_ortho": "Plano",
+    "settings_proj_persp": "3D",
+    "settings_invert_x": "Inverter rato horizontal",
+    "settings_invert_y": "Inverter rato vertical",
+
+    "legend_title": "Legenda",
+    "legend_earthquakes": "Terramotos (Magnitude)",
+    "legend_aircraft": "Aeronaves (Altitude)",
+    "legend_volcanoes": "Vulcões (Última erupção)",
+    "legend_nuclear": "Centrais nucleares (Idade)",
+    "legend_tectonic": "Placas tectónicas",
+    "legend_plate_fill": "Superfície da placa",
+    "legend_plate_boundary": "Limite da placa",
+
+    "legend_satellites": "Satélites (Órbita)",
+    "legend_sat_position": "Posição atual",
+    "legend_sat_past": "Trajetória passada (90 min)",
+    "legend_sat_future": "Trajetória futura (90 min)",
+
+    "sat_heading": "🛰 Satélites",
+    "sat_show": "Mostrar satélites",
+    "sat_downloading": "A descarregar dados orbitais...",
+    "sat_no_data": "Sem dados de satélite",
+    "sat_tracked": "satélites rastreados",
+    "sat_click_hint": "Clique para seguir:",
+    "sat_follow_tooltip": "Clique para seguir este satélite",
+    "sat_unfollow_tooltip": "Clique para parar de seguir",
+    "sat_follow_hint": "Arraste o globo para parar de seguir",
+
+    "label_click_expand": "Clique para expandir/recolher",
+    "label_copied": "Copiado para a área de transferência"
+}

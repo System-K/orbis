@@ -1,0 +1,108 @@
+{
+    "_meta": {
+        "language": "Deutsch",
+        "code": "de",
+        "direction": "ltr"
+    },
+
+    "app_title": "🛰 Orbis",
+
+    "view_globe": "🌍 Globus",
+    "view_globe_active": "● 🌍 Globus",
+    "view_map": "🗺 Karte",
+    "view_map_active": "● 🗺 Karte",
+
+    "layers_heading": "📡 Layer",
+    "layers_opacity": "Deckkraft",
+    "layers_none": "Keine Layer geladen",
+    "layer_add": "Layer hinzufügen",
+    "layer_remove": "Layer entfernen",
+
+    "catalog_title": "Layer-Katalog",
+    "catalog_back": "Zurück",
+    "catalog_description": "Datenquelle als Overlay hinzufügen.",
+
+    "cat_satellite": "🛰 Satellit",
+    "cat_atmosphere": "🌫 Atmosphäre",
+    "cat_ocean": "🌊 Ozean",
+    "cat_land": "🌿 Land",
+    "cat_climate": "🌡 Klima",
+    "cat_ice": "❄ Eis",
+    "cat_basemap": "🗺 Basiskarte",
+    "cat_weather": "⛅ Wetter",
+    "cat_geology": "🪨 Geologie",
+
+    "time_heading": "🕐 Zeitsteuerung",
+    "time_live": "🔴 Live",
+    "time_manual": "⏸ Manuell",
+    "time_utc_label": "Uhrzeit (UTC):",
+
+    "gibs_downloading": "⏳ GIBS: Lade Satellitendaten...",
+    "gibs_ready": "✅ GIBS: {}",
+    "gibs_error": "❌ GIBS: {}",
+    "gibs_attribution": "NASA GIBS / ESDIS",
+
+    "shortcuts": "L = Panel | R = Reset | T = Zeit | M = Karte | G = Labels | K = Legende",
+    "panel_tooltip": "Layer-Panel (L)",
+
+    "layer_grid": "Koordinatengitter",
+
+    "geojson_heading": "📍 GeoJSON",
+    "geojson_show_labels": "Beschriftungen anzeigen",
+    "geojson_no_layers": "Keine GeoJSON-Layer geladen",
+    "geojson_load": "📂 GeoJSON laden...",
+    "geojson_dragdrop": "oder .geojson-Dateien hierher ziehen",
+    "geojson_toggle": "Sichtbarkeit umschalten",
+    "geojson_remove": "Layer entfernen",
+
+    "live_heading": "📡 Live-Daten",
+    "live_start": "Live-Feed starten",
+    "live_stop": "Live-Feed stoppen",
+    "live_none_active": "Keine Live-Quellen aktiv",
+    "cat_seismic": "🌋 Seismik",
+    "cat_aviation": "✈ Luftfahrt",
+    "live_opensky_metered": "⚠ OpenSky: 400 Credits/Tag (anonym). Bei starker Nutzung können Daten ausbleiben.",
+
+    "settings_heading": "⚙ Einstellungen",
+    "settings_projection": "Projektion:",
+    "settings_proj_ortho": "Flach",
+    "settings_proj_persp": "3D",
+    "settings_invert_x": "Maus horizontal invertieren",
+    "settings_invert_y": "Maus vertikal invertieren",
+
+    "legend_title": "Legende",
+    "legend_earthquakes": "Erdbeben (Magnitude)",
+    "legend_aircraft": "Flugzeuge (Höhe)",
+    "legend_volcanoes": "Vulkane (Letzter Ausbruch)",
+    "legend_nuclear": "Kernkraftwerke (Alter)",
+    "legend_tectonic": "Tektonische Platten",
+    "legend_plate_fill": "Plattenfläche",
+    "legend_plate_boundary": "Plattengrenze",
+
+    "legend_satellites": "Satelliten (Umlaufbahn)",
+    "legend_sat_position": "Aktuelle Position",
+    "legend_sat_past": "Vergangene Bahn (90 Min.)",
+    "legend_sat_future": "Zukünftige Bahn (90 Min.)",
+
+    "sat_heading": "🛰 Satelliten",
+    "sat_show": "Satelliten anzeigen",
+    "sat_downloading": "Orbitaldaten werden geladen...",
+    "sat_no_data": "Keine Satellitendaten",
+    "sat_tracked": "Satelliten verfolgt",
+    "sat_click_hint": "Klick zum Verfolgen:",
+    "sat_follow_tooltip": "Klick um diesem Satelliten zu folgen",
+    "sat_unfollow_tooltip": "Klick um Verfolgung zu beenden",
+    "sat_follow_hint": "Globus ziehen um Verfolgung zu beenden",
+
+    "label_click_expand": "Klicken zum Auf-/Zuklappen",
+    "label_copied": "In Zwischenablage kopiert",
+
+    "cache_heading": "Karten-Cache",
+    "cache_max_size": "Max. Größe (MB):",
+    "cache_max_age": "Max. Alter (Tage):",
+    "cache_age_forever": "∞ (unbegrenzt)",
+    "cache_usage": "Belegung:",
+    "cache_clear": "Cache leeren",
+    "cache_cleared": "Cache geleert",
+    "tile_source_label": "Zoom-Bildquelle:"
+}

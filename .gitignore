@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Orbis runtime data (auto-created)
+/cache/
+/config/
+
+# Release packages
+/release/
