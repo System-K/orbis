@@ -18,3 +18,9 @@ desktop.ini
 
 # Release packages
 /release/
+
+# Internal development roadmap (not for public repo)
+PLAN.md
+
+# Internal development roadmap
+PLAN.md
