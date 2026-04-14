@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 
+use super::fetcher::DEFAULT_FETCH_TIMEOUT;
 use super::{fetch_tile, TileCache, TileCoord, TileSource};
 
 /// A tile download request tagged with a generation counter.
@@ -138,7 +139,13 @@ fn worker_loop(
             continue;
         }
 
-        let result = fetch_tile(&job.source, &job.coord, &cache, job.date.as_deref());
+        let result = fetch_tile(
+            &job.source,
+            &job.coord,
+            &cache,
+            job.date.as_deref(),
+            DEFAULT_FETCH_TIMEOUT,
+        );
         let _ = tx.send(WorkerResult {
             gen: job.gen,
             coord: job.coord,
