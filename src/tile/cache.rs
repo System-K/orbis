@@ -4,7 +4,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread::Thread;
 use std::time::{SystemTime, Duration};
 
 use super::TileCoord;
@@ -53,16 +54,29 @@ struct CacheLimits {
 /// The total on-disk size is tracked in an atomic counter (`total_bytes`) so
 /// that `total_size_bytes()` — called once per frame by the GUI usage readout
 /// — is O(1) instead of walking `cache_dir` recursively. The counter is
-/// populated on startup by a background thread and maintained incrementally
-/// by `put`, `get` (expired-file removal), `evict_if_needed`, `clear_source`,
-/// and `clear_all`.
+/// populated on startup by the maintenance thread's first iteration, and
+/// maintained incrementally by `put`, `get` (expired-file removal),
+/// `evict_if_needed`, `clear_source`, and `clear_all`.
+///
+/// LRU eviction and periodic reconciliation run on a dedicated background
+/// maintenance thread — the render thread never walks `cache_dir`. The
+/// thread is parked on a 30 s timer and unparked via `request_maintenance`
+/// when the render loop notices the cache has exceeded its size limit.
 pub struct TileCache {
     cache_dir: PathBuf,
-    limits: std::sync::RwLock<CacheLimits>,
+    limits: Arc<std::sync::RwLock<CacheLimits>>,
     /// Running total of on-disk bytes. Exposes an atomic `total_size_bytes`
-    /// read; maintained by every write/delete path. Seeded by a background
-    /// startup walk in `new()`.
+    /// read; maintained by every write/delete path. Seeded by the
+    /// maintenance thread's first iteration.
     total_bytes: Arc<AtomicU64>,
+    /// Handle to the maintenance thread — kept so Drop can shut it down.
+    maintenance: Option<MaintenanceHandle>,
+}
+
+/// Shutdown coordination for the maintenance thread.
+struct MaintenanceHandle {
+    thread: Thread,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl TileCache {
@@ -71,33 +85,25 @@ impl TileCache {
             log::warn!("Could not create tile cache directory: {}", e);
         }
         let total_bytes = Arc::new(AtomicU64::new(0));
+        let limits = Arc::new(std::sync::RwLock::new(CacheLimits {
+            max_size_bytes: config.max_size_bytes,
+            max_age: config.max_age,
+        }));
+        let shutdown = Arc::new(AtomicBool::new(false));
 
-        // Seed total_bytes via a one-shot background walk so `new()` doesn't
-        // block startup. Until the walk completes, the GUI usage readout
-        // reports 0, which is acceptable for a fraction of a second.
-        {
-            let dir = config.cache_dir.clone();
-            let counter = Arc::clone(&total_bytes);
-            std::thread::Builder::new()
-                .name("tile-cache-init".into())
-                .spawn(move || {
-                    let size = dir_size_recursive(&dir);
-                    counter.store(size, Ordering::Relaxed);
-                    log::info!(
-                        "Tile cache initial size: {:.1} MB",
-                        size as f64 / (1024.0 * 1024.0),
-                    );
-                })
-                .ok();
-        }
+        let maintenance = spawn_maintenance_thread(
+            config.cache_dir.clone(),
+            Arc::clone(&limits),
+            Arc::clone(&total_bytes),
+            Arc::clone(&shutdown),
+        )
+        .map(|thread| MaintenanceHandle { thread, shutdown });
 
         Self {
             cache_dir: config.cache_dir,
-            limits: std::sync::RwLock::new(CacheLimits {
-                max_size_bytes: config.max_size_bytes,
-                max_age: config.max_age,
-            }),
+            limits,
             total_bytes,
+            maintenance,
         }
     }
 
@@ -280,6 +286,10 @@ impl TileCache {
     /// effect on the next frame instead of waiting for the periodic check.
     /// A changed `cache_dir` is silently ignored — the path is fixed at
     /// construction time.
+    ///
+    /// This is an explicit, user-initiated path and runs synchronously —
+    /// the per-frame render-thread path goes through `request_maintenance`
+    /// instead.
     pub fn update_config(&self, config: CacheConfig) {
         if config.cache_dir != self.cache_dir {
             log::warn!(
@@ -292,6 +302,123 @@ impl TileCache {
             lims.max_age = config.max_age;
         }
         self.evict_if_needed();
+    }
+
+    /// Returns true if the current on-disk size exceeds the configured limit.
+    /// Cheap — one atomic load + one RwLock read.
+    pub fn should_evict(&self) -> bool {
+        let max = self
+            .limits
+            .read()
+            .map(|l| l.max_size_bytes)
+            .unwrap_or(u64::MAX);
+        self.total_bytes.load(Ordering::Relaxed) > max
+    }
+
+    /// Asks the maintenance thread to run reconciliation + eviction
+    /// as soon as possible. Non-blocking — the render thread never
+    /// walks `cache_dir`.
+    pub fn request_maintenance(&self) {
+        if let Some(m) = &self.maintenance {
+            m.thread.unpark();
+        }
+    }
+}
+
+impl Drop for TileCache {
+    fn drop(&mut self) {
+        if let Some(m) = self.maintenance.take() {
+            m.shutdown.store(true, Ordering::Relaxed);
+            m.thread.unpark();
+            // Detached — no join. Thread observes shutdown=true on its next
+            // park_timeout wake and exits. For a long-lived process this
+            // happens at shutdown; in tests the thread exits within 30 s
+            // (or immediately if still parked when we unpark).
+        }
+    }
+}
+
+/// Long-lived maintenance thread.
+///
+/// Performs the initial `dir_size_recursive` walk to seed `total_bytes`,
+/// then loops: park for up to 30 s (unpark-able by `request_maintenance`
+/// or Drop), reconcile `total_bytes` against the on-disk reality, and
+/// run LRU eviction if over the configured limit.
+fn spawn_maintenance_thread(
+    cache_dir: PathBuf,
+    limits: Arc<std::sync::RwLock<CacheLimits>>,
+    total_bytes: Arc<AtomicU64>,
+    shutdown: Arc<AtomicBool>,
+) -> Option<Thread> {
+    let handle = std::thread::Builder::new()
+        .name("tile-cache-maintenance".into())
+        .spawn(move || {
+            // Initial reconciliation: this is what seeds total_bytes on
+            // startup so `total_size_bytes()` returns the real value a
+            // fraction of a second after `TileCache::new` returns.
+            let initial = dir_size_recursive(&cache_dir);
+            total_bytes.store(initial, Ordering::Relaxed);
+            log::info!(
+                "Tile cache initial size: {:.1} MB",
+                initial as f64 / (1024.0 * 1024.0),
+            );
+
+            loop {
+                std::thread::park_timeout(Duration::from_secs(30));
+                if shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                // Reconcile: the atomic counter drifts from reality if
+                // anything modifies the cache dir from outside our own
+                // put/delete paths. A walk every 30 s corrects that.
+                let actual = dir_size_recursive(&cache_dir);
+                total_bytes.store(actual, Ordering::Relaxed);
+
+                // Evict if over the configured limit.
+                let max = match limits.read() {
+                    Ok(l) => l.max_size_bytes,
+                    Err(_) => continue,
+                };
+                if actual <= max {
+                    continue;
+                }
+
+                log::info!(
+                    "Tile cache maintenance: {:.1} MB / {:.1} MB limit",
+                    actual as f64 / (1024.0 * 1024.0),
+                    max as f64 / (1024.0 * 1024.0),
+                );
+
+                let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
+                collect_files_recursive(&cache_dir, &mut files);
+                files.sort_by_key(|f| f.2);
+
+                let mut freed: u64 = 0;
+                let target = actual - max;
+                for (path, size, _) in &files {
+                    if freed >= target {
+                        break;
+                    }
+                    if std::fs::remove_file(path).is_ok() {
+                        freed += size;
+                    }
+                }
+                if freed > 0 {
+                    total_bytes.fetch_sub(freed, Ordering::Relaxed);
+                }
+                log::info!(
+                    "Tile cache maintenance: freed {:.1} MB",
+                    freed as f64 / (1024.0 * 1024.0),
+                );
+            }
+        });
+    match handle {
+        Ok(h) => Some(h.thread().clone()),
+        Err(e) => {
+            log::warn!("Failed to spawn tile-cache maintenance thread: {}", e);
+            None
+        }
     }
 }
 
@@ -558,6 +685,68 @@ mod tests {
         let actual = dir_size_recursive(&dir);
         assert_eq!(counted, actual, "counter must match actual size after evict");
         assert!(counted <= 10_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -------- Phase B: maintenance thread --------
+
+    #[test]
+    fn test_should_evict_reflects_counter_vs_limit() {
+        let dir = unique_tmp_dir("should-evict");
+        let cache = TileCache::new(cache_config(dir.clone(), 500, None));
+        wait_initial_scan_done(&cache, 0);
+        assert!(!cache.should_evict(), "fresh cache is under the limit");
+
+        cache.put("osm", &TileCoord { z: 1, x: 0, y: 0 }, "png", &vec![0u8; 400]);
+        assert!(!cache.should_evict(), "400 bytes under 500-byte limit");
+
+        cache.put("osm", &TileCoord { z: 1, x: 0, y: 1 }, "png", &vec![0u8; 400]);
+        assert!(cache.should_evict(), "800 bytes exceeds 500-byte limit");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_request_maintenance_shrinks_cache_below_limit() {
+        // Put ~32 KB, set a tight limit, ask the maintenance thread to run,
+        // wait for it to observe the new state, and verify it shrank the
+        // cache. This exercises the full async path: flag -> unpark ->
+        // walk -> evict -> counter update.
+        let dir = unique_tmp_dir("maint-evict");
+        let cache = TileCache::new(cache_config(dir.clone(), 10_000_000, None));
+        wait_initial_scan_done(&cache, 0);
+
+        let data = vec![0u8; 4096];
+        for x in 0..8u32 {
+            cache.put("osm", &TileCoord { z: 3, x, y: 0 }, "png", &data);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(cache.total_size_bytes() >= 8 * 4096);
+
+        // Tighten limit WITHOUT calling evict_if_needed synchronously.
+        if let Ok(mut lims) = cache.limits.write() {
+            lims.max_size_bytes = 10_000;
+        }
+        assert!(cache.should_evict());
+        cache.request_maintenance();
+
+        // Wait up to 2 s for the maintenance thread to shrink the cache.
+        let mut ok = false;
+        for _ in 0..200 {
+            if cache.total_size_bytes() <= 10_000 {
+                ok = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            ok,
+            "maintenance thread must shrink cache within 2 s (still {} bytes)",
+            cache.total_size_bytes(),
+        );
+        assert_eq!(cache.total_size_bytes(), dir_size_recursive(&dir),
+            "counter must match on-disk reality after maintenance");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

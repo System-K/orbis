@@ -156,11 +156,15 @@ impl TileManager {
             None => return TileFrameResult::default(),
         };
 
-        // Periodic cache size check (every ~600 frames = ~10s @ 60fps)
+        // Periodic cache size check (every ~600 frames = ~10s @ 60fps).
+        // The render thread never walks the filesystem — it reads an atomic
+        // counter and, if over the limit, signals the maintenance thread.
         self.cache_check_counter = self.cache_check_counter.wrapping_add(1);
         if self.cache_check_counter >= 600 {
             self.cache_check_counter = 0;
-            self.cache.evict_if_needed();
+            if self.cache.should_evict() {
+                self.cache.request_maintenance();
+            }
         }
 
         // Source-aware zoom
