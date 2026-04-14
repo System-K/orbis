@@ -613,8 +613,10 @@ impl GpuState {
         };
         let frame = self.tile_manager.update(view, &tile_settings);
 
-        // On source/zoom change the compositor was reset — drop the old
-        // GPU texture so its stale pixels don't render for one frame.
+        // Source-change reset: drop the GPU texture so the previous
+        // source's pixels don't keep rendering. (Zoom changes intentionally
+        // do NOT reset — old pixels stay visible until new-zoom tiles
+        // overwrite them, which keeps the transition seamless.)
         if frame.reset {
             self.tile_overlay_texture = None;
             self.tile_overlay_bind_group = None;

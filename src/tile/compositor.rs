@@ -46,13 +46,32 @@ impl TileCompositor {
         }
     }
 
-    /// Clears the buffer and resets for a new zoom level.
+    /// Full reset — clears the buffer and tracking. Use only when the source
+    /// changes or the cache is cleared, because it produces a one-frame
+    /// black flash.
     pub fn reset(&mut self, zoom: u32) {
         self.buffer.fill(0);
         self.composited.clear();
         self.current_zoom = zoom;
         self.dirty = true;
         self.has_content = false;
+    }
+
+    /// Transitions to a new zoom level WITHOUT clearing the pixel buffer.
+    ///
+    /// Coord tracking for the old zoom is dropped, so the manager will
+    /// re-request the new zoom's tiles. The old pixels remain visible
+    /// until new tiles overwrite their regions, avoiding the black flash
+    /// during a zoom step.
+    pub fn demote_to_zoom(&mut self, new_zoom: u32) {
+        if new_zoom == self.current_zoom {
+            return;
+        }
+        // Keep only entries at the new zoom level (normally none — callers
+        // usually hit this path on an actual zoom change — but be defensive).
+        self.composited.retain(|c| c.z == new_zoom);
+        self.current_zoom = new_zoom;
+        // Buffer unchanged, not dirty — nothing to re-upload this frame.
     }
 
     /// Returns true if this tile has already been composited.
@@ -145,5 +164,62 @@ impl TileCompositor {
     #[allow(dead_code)] // Used in debug println
     pub fn tile_count(&self) -> usize {
         self.composited.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::ImageEncoder;
+
+    /// Build a tiny 1x1 RGBA PNG so composite_tile actually decodes.
+    fn minimal_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 128, 64, 255]));
+        let mut out = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(img.as_raw(), 1, 1, image::ExtendedColorType::Rgba8)
+            .expect("encode minimal png");
+        out
+    }
+
+    #[test]
+    fn test_demote_to_zoom_keeps_pixels() {
+        // Composite a tile at z=3, then demote to z=4. The pixel buffer
+        // must stay intact (has_content still true, buffer non-zero
+        // somewhere), but coord-tracking for the old zoom must be gone so
+        // the manager re-requests at the new zoom.
+        let mut comp = TileCompositor::new(64, 32);
+        comp.reset(3);
+        let png = minimal_png();
+        let coord = TileCoord { z: 3, x: 0, y: 0 };
+        assert!(comp.composite_tile(&coord, &png));
+        assert!(comp.has_content, "content must be flagged after composite");
+        assert_eq!(comp.tile_count(), 1);
+
+        comp.demote_to_zoom(4);
+
+        assert_eq!(comp.current_zoom, 4);
+        assert_eq!(comp.tile_count(), 0, "old-zoom entries must be dropped");
+        assert!(comp.has_content, "pixels must remain — no black flash");
+        assert!(
+            comp.buffer().iter().any(|&b| b != 0),
+            "buffer must still carry the old-zoom pixels until overwritten",
+        );
+    }
+
+    #[test]
+    fn test_reset_clears_everything() {
+        // Source-change path: reset() must blank the buffer and clear state.
+        let mut comp = TileCompositor::new(64, 32);
+        comp.reset(3);
+        let coord = TileCoord { z: 3, x: 0, y: 0 };
+        assert!(comp.composite_tile(&coord, &minimal_png()));
+
+        comp.reset(5);
+
+        assert_eq!(comp.current_zoom, 5);
+        assert_eq!(comp.tile_count(), 0);
+        assert!(!comp.has_content);
+        assert!(comp.buffer().iter().all(|&b| b == 0));
     }
 }

@@ -72,9 +72,12 @@ pub struct TileUpload<'a> {
 /// Events the manager reports back to `main.rs` after an `update()` call.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TileFrameResult {
-    /// True if the compositor was reset this frame (source or zoom change).
-    /// The caller should drop the old GPU texture/bind_group so the stale
-    /// pixels stop rendering until new tiles are composited.
+    /// True if the compositor was fully reset this frame (source change or
+    /// cache clear). The caller should drop the old GPU texture/bind_group
+    /// so the stale pixels stop rendering until new tiles are composited.
+    ///
+    /// A zoom change alone does NOT set this — the compositor keeps the old
+    /// pixels so the transition is seamless.
     pub reset: bool,
 }
 
@@ -164,21 +167,28 @@ impl TileManager {
         let zoom = level_for(&source, view.distance, settings.zoom_bias);
         self.metrics.current_zoom = zoom;
 
-        // Source/zoom change -> reset compositor + bump gen
+        // Source-change: full reset (caller must drop GPU texture to avoid
+        // one frame of the old source's pixels). Zoom-change: demote (keep
+        // pixels in the buffer so the transition is seamless).
         let source_changed = source.id != self.prev_source;
         let zoom_changed = zoom != self.prev_zoom;
         let mut reset = false;
-        if source_changed || zoom_changed {
-            if source_changed {
-                log::info!("Tile source changed: {} -> {}", self.prev_source, source.id);
-                self.prev_source = source.id.clone();
-            }
+        if source_changed {
+            log::info!("Tile source changed: {} -> {}", self.prev_source, source.id);
+            self.prev_source = source.id.clone();
             let new_gen = self.pool.bump_generation();
             self.metrics.gen = new_gen;
             self.compositor.reset(zoom);
             self.prev_zoom = zoom;
             self.in_flight.clear();
             reset = true;
+        } else if zoom_changed {
+            let new_gen = self.pool.bump_generation();
+            self.metrics.gen = new_gen;
+            self.compositor.demote_to_zoom(zoom);
+            self.prev_zoom = zoom;
+            self.in_flight.clear();
+            // reset stays false — old pixels keep rendering.
         }
 
         // Visible tiles
@@ -347,8 +357,10 @@ mod tests {
     fn test_source_change_triggers_reset() {
         let (mut m, tmp) = manager_with("osm");
         // First update at a given view/source locks in prev_zoom/prev_source.
+        // Zoom changes from the initial 0, but zoom-only changes demote
+        // without resetting (Phase 5: keep pixels across zoom steps).
         let r1 = m.update(default_view(), &default_settings("osm"));
-        assert!(r1.reset, "first update should reset (zoom changed from initial 0)");
+        assert!(!r1.reset, "zoom-only change (first tick) must not reset");
 
         // Same settings -> no reset.
         let r2 = m.update(default_view(), &default_settings("osm"));
@@ -357,6 +369,30 @@ mod tests {
         // Switch source -> reset.
         let r3 = m.update(default_view(), &default_settings("sentinel2"));
         assert!(r3.reset, "source change must reset");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_zoom_change_demotes_but_does_not_reset() {
+        // A pure zoom change must NOT flag the compositor as fully reset —
+        // old pixels keep showing until new-zoom tiles overwrite them.
+        let (mut m, tmp) = manager_with("osm");
+        let mut settings = default_settings("osm");
+
+        // Prime at a far distance (low zoom).
+        let mut view = default_view();
+        view.distance = 20.0;
+        let _ = m.update(view, &settings);
+        let z1 = m.metrics().current_zoom;
+
+        // Zoom in by lowering distance + biasing; force a zoom-level change.
+        view.distance = 2.5;
+        settings.zoom_bias = 2;
+        let r = m.update(view, &settings);
+        let z2 = m.metrics().current_zoom;
+        assert_ne!(z1, z2, "zoom level must actually change for this test");
+        assert!(!r.reset, "zoom-only change must demote, not full-reset");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
