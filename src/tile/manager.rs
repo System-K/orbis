@@ -62,11 +62,25 @@ pub enum ClearScope {
     All,
 }
 
-/// A dirty compositor buffer ready for GPU upload.
+/// A dirty compositor sub-region ready for GPU upload.
+///
+/// `data` is the full compositor buffer (stride `buffer_width * 4` bytes
+/// per row); the upload region is `(origin_x, origin_y, width, height)`.
+/// `main.rs` computes the byte offset into `data` for that region and
+/// passes it to `queue.write_texture`, so only the dirty rect is sent
+/// over the PCIe bus instead of the whole 4096×2048 buffer.
 pub struct TileUpload<'a> {
+    /// Full compositor buffer (row stride = `buffer_width * 4`).
+    pub data: &'a [u8],
+    /// Full buffer dimensions — used to size the GPU texture on first
+    /// upload and to compute the byte stride.
+    pub buffer_width: u32,
+    pub buffer_height: u32,
+    /// Destination sub-region within the texture.
+    pub origin_x: u32,
+    pub origin_y: u32,
     pub width: u32,
     pub height: u32,
-    pub data: &'a [u8],
 }
 
 /// Events the manager reports back to `main.rs` after an `update()` call.
@@ -295,17 +309,38 @@ impl TileManager {
         t * t * (3.0 - 2.0 * t)
     }
 
-    /// Returns dirty compositor buffer for GPU upload (and marks clean).
-    /// Returns None when there is nothing new to upload this frame.
+    /// Returns the dirty sub-region of the compositor buffer for GPU
+    /// upload (and marks clean). Returns None when there is nothing new
+    /// to upload this frame.
+    ///
+    /// Sends just the dirty rectangle instead of the full 4096×2048
+    /// buffer — one tile at z=3 typically covers ~512×512 pixels (1 MB)
+    /// instead of 33 MB.
     pub fn take_upload(&mut self) -> Option<TileUpload<'_>> {
         if !self.compositor.dirty || !self.compositor.has_content {
             return None;
         }
+        let (x0, y0, x1, y1) = self.compositor.dirty_rect();
+        // Guard against a dirty flag without a valid rect (should not
+        // happen, but be defensive — x1==x0 would send a zero-width
+        // upload and wgpu would reject it).
+        if x1 <= x0 || y1 <= y0 {
+            self.compositor.mark_clean();
+            return None;
+        }
+        let origin_x = x0;
+        let origin_y = y0;
+        let rect_w = x1 - x0;
+        let rect_h = y1 - y0;
         self.compositor.mark_clean();
         Some(TileUpload {
-            width: self.compositor.width,
-            height: self.compositor.height,
             data: self.compositor.buffer(),
+            buffer_width: self.compositor.width,
+            buffer_height: self.compositor.height,
+            origin_x,
+            origin_y,
+            width: rect_w,
+            height: rect_h,
         })
     }
 }

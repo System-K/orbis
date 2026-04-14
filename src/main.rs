@@ -629,11 +629,15 @@ impl GpuState {
             &self.tile_overlay_settings_buffer, 0, bytemuck::bytes_of(&settings),
         );
 
-        // Upload any dirty compositor buffer to the GPU
+        // Upload any dirty compositor sub-region to the GPU. Phase D:
+        // only the dirty rectangle is sent — a single tile at z=3 is
+        // ~512×512 = 1 MB instead of the full 33 MB buffer.
         if let Some(upload) = self.tile_manager.take_upload() {
             if self.tile_overlay_texture.is_none() {
                 let size = wgpu::Extent3d {
-                    width: upload.width, height: upload.height, depth_or_array_layers: 1,
+                    width: upload.buffer_width,
+                    height: upload.buffer_height,
+                    depth_or_array_layers: 1,
                 };
                 let tex = self.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Tile Overlay Texture"),
@@ -664,17 +668,33 @@ impl GpuState {
                 self.tile_overlay_bind_group = Some(bind_group);
             }
             if let Some(tex) = &self.tile_overlay_texture {
+                // The source data is the full compositor buffer; we tell
+                // wgpu to treat rows as `buffer_width * 4` bytes wide and
+                // start at the offset corresponding to the rect's top-left.
+                let row_stride_bytes = upload.buffer_width * 4;
+                let offset = (upload.origin_y as u64) * (row_stride_bytes as u64)
+                    + (upload.origin_x as u64) * 4;
                 self.queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
-                        texture: tex, mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All,
+                        texture: tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: upload.origin_x,
+                            y: upload.origin_y,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
                     },
                     upload.data,
                     wgpu::TexelCopyBufferLayout {
-                        offset: 0, bytes_per_row: Some(upload.width * 4), rows_per_image: Some(upload.height),
+                        offset,
+                        bytes_per_row: Some(row_stride_bytes),
+                        rows_per_image: Some(upload.height),
                     },
                     wgpu::Extent3d {
-                        width: upload.width, height: upload.height, depth_or_array_layers: 1,
+                        width: upload.width,
+                        height: upload.height,
+                        depth_or_array_layers: 1,
                     },
                 );
             }

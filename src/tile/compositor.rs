@@ -28,6 +28,13 @@ pub struct TileCompositor {
     pub dirty: bool,
     /// Whether any tiles have been composited at all
     pub has_content: bool,
+    /// Bounding box of changed pixels since the last `mark_clean`
+    /// (half-open: [x_min, x_max) × [y_min, y_max)). When `dirty` is
+    /// false these are undefined and must not be read.
+    dirty_x_min: u32,
+    dirty_y_min: u32,
+    dirty_x_max: u32,
+    dirty_y_max: u32,
 }
 
 impl TileCompositor {
@@ -43,6 +50,10 @@ impl TileCompositor {
             current_zoom: 0,
             dirty: false,
             has_content: false,
+            dirty_x_min: 0,
+            dirty_y_min: 0,
+            dirty_x_max: 0,
+            dirty_y_max: 0,
         }
     }
 
@@ -55,6 +66,12 @@ impl TileCompositor {
         self.current_zoom = zoom;
         self.dirty = true;
         self.has_content = false;
+        // The zero-fill dirtied the whole buffer — upload it all so no
+        // stale pixels from the previous source remain on the GPU.
+        self.dirty_x_min = 0;
+        self.dirty_y_min = 0;
+        self.dirty_x_max = self.width;
+        self.dirty_y_max = self.height;
     }
 
     /// Transitions to a new zoom level WITHOUT clearing the pixel buffer.
@@ -141,6 +158,19 @@ impl TileCompositor {
             }
         }
 
+        // Expand dirty rect to the clipped destination region we actually
+        // wrote. Use the same clamps as the blit loop so the upload region
+        // never lies outside the buffer.
+        let touched_x_min = px_left.max(0) as u32;
+        let touched_y_min = px_top.max(0) as u32;
+        let touched_x_max = (px_left.max(0) as u32 + dest_w).min(self.width);
+        let touched_y_max = (px_top.max(0) as u32 + dest_h).min(self.height);
+        if touched_x_max > touched_x_min && touched_y_max > touched_y_min {
+            self.expand_dirty_rect(
+                touched_x_min, touched_y_min, touched_x_max, touched_y_max,
+            );
+        }
+
         self.composited.insert(*coord);
         self.dirty = true;
         self.has_content = true;
@@ -150,14 +180,43 @@ impl TileCompositor {
         true
     }
 
+    /// Grows the dirty rect to include the given half-open rectangle.
+    /// Assumes the caller already established `dirty=true` (or is about
+    /// to) — the rect is reset by `mark_clean`, not by `dirty=false`
+    /// alone.
+    fn expand_dirty_rect(&mut self, x0: u32, y0: u32, x1: u32, y1: u32) {
+        if !self.dirty {
+            self.dirty_x_min = x0;
+            self.dirty_y_min = y0;
+            self.dirty_x_max = x1;
+            self.dirty_y_max = y1;
+        } else {
+            self.dirty_x_min = self.dirty_x_min.min(x0);
+            self.dirty_y_min = self.dirty_y_min.min(y0);
+            self.dirty_x_max = self.dirty_x_max.max(x1);
+            self.dirty_y_max = self.dirty_y_max.max(y1);
+        }
+    }
+
+    /// Returns the current dirty rectangle as (x_min, y_min, x_max, y_max).
+    /// Only valid when `dirty` is true.
+    pub fn dirty_rect(&self) -> (u32, u32, u32, u32) {
+        (self.dirty_x_min, self.dirty_y_min, self.dirty_x_max, self.dirty_y_max)
+    }
+
     /// Returns the raw RGBA buffer for GPU upload.
     pub fn buffer(&self) -> &[u8] {
         &self.buffer
     }
 
-    /// Marks the buffer as uploaded (not dirty anymore).
+    /// Marks the buffer as uploaded (not dirty anymore) and resets the
+    /// dirty rect so the next composite starts a fresh region.
     pub fn mark_clean(&mut self) {
         self.dirty = false;
+        self.dirty_x_min = 0;
+        self.dirty_y_min = 0;
+        self.dirty_x_max = 0;
+        self.dirty_y_max = 0;
     }
 
     /// Number of tiles composited in current buffer.
@@ -205,6 +264,73 @@ mod tests {
             comp.buffer().iter().any(|&b| b != 0),
             "buffer must still carry the old-zoom pixels until overwritten",
         );
+    }
+
+    #[test]
+    fn test_dirty_rect_covers_composited_tile() {
+        // A fresh compositor that composites one tile must report a
+        // non-empty dirty rect inside the buffer bounds.
+        let mut comp = TileCompositor::new(64, 32);
+        comp.reset(3);
+        comp.mark_clean(); // drop the reset's full-buffer dirty mark
+        assert!(!comp.dirty);
+
+        let coord = TileCoord { z: 3, x: 0, y: 0 };
+        assert!(comp.composite_tile(&coord, &minimal_png()));
+        assert!(comp.dirty, "composite must set dirty");
+
+        let (x0, y0, x1, y1) = comp.dirty_rect();
+        assert!(x1 > x0, "dirty rect must have positive width");
+        assert!(y1 > y0, "dirty rect must have positive height");
+        assert!(x1 <= comp.width, "dirty rect clamped to buffer width");
+        assert!(y1 <= comp.height, "dirty rect clamped to buffer height");
+    }
+
+    #[test]
+    fn test_dirty_rect_expands_across_multiple_tiles() {
+        let mut comp = TileCompositor::new(256, 128);
+        comp.reset(3);
+        comp.mark_clean();
+
+        // Composite two tiles at opposite corners of zoom-3 grid.
+        let a = TileCoord { z: 3, x: 0, y: 0 };
+        let b = TileCoord { z: 3, x: 7, y: 7 };
+        assert!(comp.composite_tile(&a, &minimal_png()));
+        let (ax0, ay0, ax1, ay1) = comp.dirty_rect();
+        assert!(comp.composite_tile(&b, &minimal_png()));
+        let (cx0, cy0, cx1, cy1) = comp.dirty_rect();
+
+        assert!(cx0 <= ax0 && cy0 <= ay0, "dirty rect min shrinks or equal after expand");
+        assert!(cx1 >= ax1 && cy1 >= ay1, "dirty rect max grows or equal after expand");
+    }
+
+    #[test]
+    fn test_mark_clean_resets_dirty_rect() {
+        let mut comp = TileCompositor::new(64, 32);
+        comp.reset(3);
+        comp.mark_clean();
+        let coord = TileCoord { z: 3, x: 0, y: 0 };
+        assert!(comp.composite_tile(&coord, &minimal_png()));
+        assert!(comp.dirty);
+
+        comp.mark_clean();
+        assert!(!comp.dirty);
+        let (x0, y0, x1, y1) = comp.dirty_rect();
+        assert_eq!((x0, y0, x1, y1), (0, 0, 0, 0),
+            "mark_clean must zero the dirty rect");
+    }
+
+    #[test]
+    fn test_reset_marks_full_buffer_dirty() {
+        // A source change (reset) writes zeros everywhere, so the dirty
+        // rect must cover the whole buffer — otherwise GPU keeps stale
+        // pixels from the previous source around the rect we do upload.
+        let mut comp = TileCompositor::new(64, 32);
+        comp.reset(3);
+        assert!(comp.dirty);
+        let (x0, y0, x1, y1) = comp.dirty_rect();
+        assert_eq!((x0, y0, x1, y1), (0, 0, 64, 32),
+            "reset must mark the whole buffer dirty");
     }
 
     #[test]
