@@ -3,6 +3,8 @@
 // =============================================================================
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, Duration};
 
 use super::TileCoord;
@@ -47,9 +49,20 @@ struct CacheLimits {
 /// be updated while download threads hold a shared reference. The cache root
 /// directory is immutable after construction — it is read on the hot path
 /// without any locking.
+///
+/// The total on-disk size is tracked in an atomic counter (`total_bytes`) so
+/// that `total_size_bytes()` — called once per frame by the GUI usage readout
+/// — is O(1) instead of walking `cache_dir` recursively. The counter is
+/// populated on startup by a background thread and maintained incrementally
+/// by `put`, `get` (expired-file removal), `evict_if_needed`, `clear_source`,
+/// and `clear_all`.
 pub struct TileCache {
     cache_dir: PathBuf,
     limits: std::sync::RwLock<CacheLimits>,
+    /// Running total of on-disk bytes. Exposes an atomic `total_size_bytes`
+    /// read; maintained by every write/delete path. Seeded by a background
+    /// startup walk in `new()`.
+    total_bytes: Arc<AtomicU64>,
 }
 
 impl TileCache {
@@ -57,12 +70,34 @@ impl TileCache {
         if let Err(e) = std::fs::create_dir_all(&config.cache_dir) {
             log::warn!("Could not create tile cache directory: {}", e);
         }
+        let total_bytes = Arc::new(AtomicU64::new(0));
+
+        // Seed total_bytes via a one-shot background walk so `new()` doesn't
+        // block startup. Until the walk completes, the GUI usage readout
+        // reports 0, which is acceptable for a fraction of a second.
+        {
+            let dir = config.cache_dir.clone();
+            let counter = Arc::clone(&total_bytes);
+            std::thread::Builder::new()
+                .name("tile-cache-init".into())
+                .spawn(move || {
+                    let size = dir_size_recursive(&dir);
+                    counter.store(size, Ordering::Relaxed);
+                    log::info!(
+                        "Tile cache initial size: {:.1} MB",
+                        size as f64 / (1024.0 * 1024.0),
+                    );
+                })
+                .ok();
+        }
+
         Self {
             cache_dir: config.cache_dir,
             limits: std::sync::RwLock::new(CacheLimits {
                 max_size_bytes: config.max_size_bytes,
                 max_age: config.max_age,
             }),
+            total_bytes,
         }
     }
 
@@ -89,11 +124,15 @@ impl TileCache {
         let max_age = self.limits.read().unwrap().max_age;
         if let Some(max_age) = max_age {
             if let Ok(metadata) = path.metadata() {
+                let file_size = metadata.len();
                 if let Ok(modified) = metadata.modified() {
                     if let Ok(age) = SystemTime::now().duration_since(modified) {
                         if age > max_age {
                             // Expired — remove and return miss
-                            let _ = std::fs::remove_file(&path);
+                            if std::fs::remove_file(&path).is_ok() {
+                                self.total_bytes
+                                    .fetch_sub(file_size, Ordering::Relaxed);
+                            }
                             return None;
                         }
                     }
@@ -125,14 +164,28 @@ impl TileCache {
             let _ = std::fs::create_dir_all(parent);
         }
 
+        // If this path already has a file, subtract its old size before
+        // overwriting so the counter doesn't double-count.
+        let old_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
         if let Err(e) = std::fs::write(&path, data) {
             log::warn!("Failed to cache tile {}/{}: {}", source_id, coord, e);
+            return;
+        }
+
+        let new_size = data.len() as u64;
+        if new_size >= old_size {
+            self.total_bytes
+                .fetch_add(new_size - old_size, Ordering::Relaxed);
+        } else {
+            self.total_bytes
+                .fetch_sub(old_size - new_size, Ordering::Relaxed);
         }
     }
 
-    /// Returns the total size of the cache in bytes.
+    /// Returns the total size of the cache in bytes. O(1) — atomic load.
     pub fn total_size_bytes(&self) -> u64 {
-        dir_size_recursive(&self.cache_dir)
+        self.total_bytes.load(Ordering::Relaxed)
     }
 
     /// Runs LRU eviction if the cache exceeds max_size_bytes.
@@ -148,7 +201,7 @@ impl TileCache {
             Err(_) => return,
         };
 
-        let current_size = dir_size_recursive(&self.cache_dir);
+        let current_size = self.total_bytes.load(Ordering::Relaxed);
         if current_size <= max_size {
             return;
         }
@@ -178,6 +231,11 @@ impl TileCache {
             }
         }
 
+        // One bulk fetch_sub for everything we freed.
+        if freed > 0 {
+            self.total_bytes.fetch_sub(freed, Ordering::Relaxed);
+        }
+
         log::info!("Tile cache: freed {:.1} MB", freed as f64 / (1024.0 * 1024.0));
     }
 
@@ -190,9 +248,14 @@ impl TileCache {
         if !source_dir.exists() {
             return;
         }
+        // Sum the source's bytes before removing so we can subtract them from
+        // the counter.
+        let source_size = dir_size_recursive(&source_dir);
         if let Err(e) = std::fs::remove_dir_all(&source_dir) {
             log::warn!("Failed to clear tile cache for source '{}': {}", source_id, e);
         } else {
+            self.total_bytes
+                .fetch_sub(source_size, Ordering::Relaxed);
             log::info!("Tile cache cleared for source '{}'", source_id);
         }
     }
@@ -207,6 +270,7 @@ impl TileCache {
             log::warn!("Failed to clear tile cache: {}", e);
         }
         let _ = std::fs::create_dir_all(&self.cache_dir);
+        self.total_bytes.store(0, Ordering::Relaxed);
         log::info!("Tile cache cleared (all sources)");
     }
 
@@ -278,6 +342,21 @@ mod tests {
 
     fn cache_config(dir: PathBuf, max_size: u64, max_age: Option<Duration>) -> CacheConfig {
         CacheConfig { cache_dir: dir, max_size_bytes: max_size, max_age }
+    }
+
+    /// Wait for the background startup walk to settle on a known-empty dir.
+    /// Without this, tests that immediately `put` + assert total_size_bytes
+    /// can race the walk and observe a lingering 0 or the walk overwriting
+    /// the put's fetch_add.
+    fn wait_initial_scan_done(cache: &TileCache, expected: u64) {
+        // The init thread does one store. Busy-wait briefly for it to happen
+        // on fresh / empty directories where `expected` is typically 0.
+        for _ in 0..100 {
+            if cache.total_size_bytes() == expected {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -361,6 +440,7 @@ mod tests {
         let dir = unique_tmp_dir("update-evict");
         // Start with a huge limit, put several tiles
         let cache = TileCache::new(cache_config(dir.clone(), 10_000_000, None));
+        wait_initial_scan_done(&cache, 0);
         let data = vec![0u8; 4096]; // 4 KB each
         for x in 0..8u32 {
             let c = TileCoord { z: 3, x, y: 0 };
@@ -395,6 +475,109 @@ mod tests {
         let got = cache.get("osm", &c, "png");
         assert!(got.is_some(), "cache_dir change must be a no-op on storage location");
         assert!(!other.exists(), "new cache_dir must not have been created/used");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -------- Phase A: O(1) total_bytes counter --------
+
+    #[test]
+    fn test_total_size_after_put_is_sum_of_data() {
+        let dir = unique_tmp_dir("total-put");
+        let cache = TileCache::new(cache_config(dir.clone(), 1_000_000, None));
+        wait_initial_scan_done(&cache, 0);
+
+        cache.put("osm", &TileCoord { z: 1, x: 0, y: 0 }, "png", &vec![0u8; 100]);
+        cache.put("osm", &TileCoord { z: 1, x: 0, y: 1 }, "png", &vec![0u8; 250]);
+        cache.put("osm", &TileCoord { z: 1, x: 1, y: 0 }, "png", &vec![0u8; 42]);
+
+        assert_eq!(cache.total_size_bytes(), 100 + 250 + 42);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_total_size_after_overwrite_does_not_double_count() {
+        let dir = unique_tmp_dir("total-overwrite");
+        let cache = TileCache::new(cache_config(dir.clone(), 1_000_000, None));
+        wait_initial_scan_done(&cache, 0);
+
+        let coord = TileCoord { z: 1, x: 0, y: 0 };
+        cache.put("osm", &coord, "png", &vec![0u8; 100]);
+        cache.put("osm", &coord, "png", &vec![0u8; 250]); // overwrite, not new
+        assert_eq!(cache.total_size_bytes(), 250);
+
+        cache.put("osm", &coord, "png", &vec![0u8; 10]); // shrink
+        assert_eq!(cache.total_size_bytes(), 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_total_size_after_clear_source_drops_that_source_only() {
+        let dir = unique_tmp_dir("total-clear-source");
+        let cache = TileCache::new(cache_config(dir.clone(), 1_000_000, None));
+        wait_initial_scan_done(&cache, 0);
+
+        cache.put("osm", &TileCoord { z: 1, x: 0, y: 0 }, "png", &vec![0u8; 100]);
+        cache.put("sentinel2", &TileCoord { z: 1, x: 0, y: 0 }, "jpg", &vec![0u8; 250]);
+        assert_eq!(cache.total_size_bytes(), 350);
+
+        cache.clear_source("sentinel2");
+        assert_eq!(cache.total_size_bytes(), 100, "only sentinel2 bytes should drop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_total_size_after_clear_all_is_zero() {
+        let dir = unique_tmp_dir("total-clear-all");
+        let cache = TileCache::new(cache_config(dir.clone(), 1_000_000, None));
+        wait_initial_scan_done(&cache, 0);
+
+        cache.put("osm", &TileCoord { z: 1, x: 0, y: 0 }, "png", &vec![0u8; 100]);
+        cache.put("sentinel2", &TileCoord { z: 1, x: 0, y: 0 }, "jpg", &vec![0u8; 250]);
+
+        cache.clear_all();
+        assert_eq!(cache.total_size_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_total_size_after_eviction_matches_remaining() {
+        let dir = unique_tmp_dir("total-evict");
+        let cache = TileCache::new(cache_config(dir.clone(), 10_000_000, None));
+        wait_initial_scan_done(&cache, 0);
+
+        // Put ~32 KB of tiles, then shrink the limit and expect the
+        // counter to track the on-disk total after eviction.
+        let data = vec![0u8; 4096];
+        for x in 0..8u32 {
+            cache.put("osm", &TileCoord { z: 3, x, y: 0 }, "png", &data);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        cache.update_config(cache_config(dir.clone(), 10_000, None));
+
+        let counted = cache.total_size_bytes();
+        let actual = dir_size_recursive(&dir);
+        assert_eq!(counted, actual, "counter must match actual size after evict");
+        assert!(counted <= 10_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_total_size_after_expired_get_drops_file_size() {
+        let dir = unique_tmp_dir("total-expire");
+        let cache = TileCache::new(cache_config(
+            dir.clone(), 1_000_000, Some(Duration::from_secs(60)),
+        ));
+        wait_initial_scan_done(&cache, 0);
+
+        let coord = TileCoord { z: 5, x: 1, y: 2 };
+        cache.put("osm", &coord, "png", &vec![0u8; 300]);
+        assert_eq!(cache.total_size_bytes(), 300);
+
+        // Backdate to force expiry on get()
+        let path = dir.join("osm").join("5").join("1").join("2.png");
+        assert!(backdate(&path, Duration::from_secs(3600)));
+        assert!(cache.get("osm", &coord, "png").is_none());
+        assert_eq!(cache.total_size_bytes(), 0, "expired-file removal must update counter");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
