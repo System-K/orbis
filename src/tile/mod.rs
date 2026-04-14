@@ -35,7 +35,7 @@ pub use zoom::{level_for, visible_bounds};
 pub use cache::{TileCache, CacheConfig};
 pub use fetcher::fetch_tile;
 pub use compositor::TileCompositor;
-#[allow(unused_imports)] // TileFrameResult/TileMetrics/TileUpload wired in via public API (main.rs / Phase 6)
+#[allow(unused_imports)] // TileFrameResult/TileUpload re-exported for API completeness
 pub use manager::{
     ClearScope, TileFrameResult, TileManager, TileMetrics, TileSettings, TileUpload, ViewState,
 };

@@ -680,8 +680,9 @@ impl GpuState {
             }
         }
 
-        // Periodic refresh of cache-usage readout for the GUI
+        // Periodic refresh of cache-usage + metrics for the GUI status line
         self.gui_state.cache_usage_mb = self.tile_manager.cache_size_mb();
+        self.gui_state.tile_metrics = self.tile_manager.metrics().clone();
     }
 
     /// Smoothly tracks a satellite with the camera (M13c).

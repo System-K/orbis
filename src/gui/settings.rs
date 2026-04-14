@@ -148,5 +148,18 @@ pub(super) fn draw_display_settings(ui: &mut egui::Ui, gui_state: &mut GuiState)
                 gui_state.cache_clear_request = true;
             }
         });
+
+        // Tile-pipeline status (universal notation, no i18n keys).
+        let m = &gui_state.tile_metrics;
+        ui.label(format!(
+            "z={}  tiles={}/{}  loading={}",
+            m.current_zoom, m.composited_tiles, m.visible_tiles, m.in_flight,
+        ));
+
+        #[cfg(debug_assertions)]
+        ui.label(format!(
+            "hits={}  miss={}  gen={}",
+            m.cache_hits, m.cache_misses, m.gen,
+        ));
     });
 }

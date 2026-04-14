@@ -208,6 +208,8 @@ pub struct GuiState {
     pub cache_clear_request: bool,
     /// Available tile sources (id, display_name) — populated at startup
     pub tile_sources: Vec<(String, String)>,
+    /// Latest TileManager metrics snapshot (refreshed each frame by main.rs)
+    pub tile_metrics: crate::tile::TileMetrics,
 
     // --- Custom Sources (M17e) ---
     /// Whether the "Add Custom Source" dialog window is open
@@ -360,6 +362,7 @@ impl GuiState {
                 .iter()
                 .map(|s| (s.id.clone(), s.name.clone()))
                 .collect(),
+            tile_metrics: crate::tile::TileMetrics::default(),
             custom_source_dialog_open: false,
             custom_source_form: CustomSourceForm::default(),
             custom_sources_config: crate::custom_source::load_config(),
