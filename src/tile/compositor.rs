@@ -134,27 +134,51 @@ impl TileCompositor {
         let dest_w = (px_right - px_left).max(1) as u32;
         let dest_h = (px_bottom - px_top).max(1) as u32;
 
-        // Blit tile into buffer with nearest-neighbor scaling
-        for dy in 0..dest_h {
-            for dx in 0..dest_w {
-                let dest_x = px_left as u32 + dx;
-                let dest_y = px_top as u32 + dy;
+        // Phase E: clip the destination rectangle up-front and precompute
+        // the per-column source-x table, so the inner loop does one table
+        // lookup + one 4-byte `copy_from_slice` per pixel (no f32 math,
+        // no per-pixel bounds check).
+        let dest_x0 = px_left.max(0) as u32;
+        let dest_y0 = px_top.max(0) as u32;
+        let dest_x1 = ((px_left + dest_w as i32).max(0) as u32).min(self.width);
+        let dest_y1 = ((px_top + dest_h as i32).max(0) as u32).min(self.height);
 
-                if dest_x >= self.width || dest_y >= self.height {
-                    continue;
-                }
+        if dest_x1 <= dest_x0 || dest_y1 <= dest_y0 {
+            // Fully clipped — nothing to blit, but still record the
+            // (empty) composition so we don't re-request this coord.
+            self.composited.insert(*coord);
+            self.has_content = true;
+            log::debug!("Composited tile {} — fully clipped", coord);
+            return true;
+        }
 
-                // Source pixel (scale from dest rect to tile rect)
-                let sx = (dx as f32 / dest_w as f32 * tw as f32) as u32;
-                let sy = (dy as f32 / dest_h as f32 * th as f32) as u32;
-                let sx = sx.min(tw - 1);
-                let sy = sy.min(th - 1);
+        // Source-x table: `src_x_tbl[local_x]` is the source column for
+        // destination column `dest_x0 + local_x`.
+        let cols = (dest_x1 - dest_x0) as usize;
+        let mut src_x_tbl: Vec<u32> = Vec::with_capacity(cols);
+        let tw_f = tw as f32;
+        let inv_dest_w = 1.0 / dest_w as f32;
+        for local_x in 0..cols {
+            let dx = (dest_x0 as i32 + local_x as i32 - px_left) as f32;
+            let sx = (dx * inv_dest_w * tw_f) as u32;
+            src_x_tbl.push(sx.min(tw - 1));
+        }
 
-                let src_idx = ((sy * tw + sx) * 4) as usize;
-                let dst_idx = ((dest_y * self.width + dest_x) * 4) as usize;
+        let tile_pixels = img.as_raw();
+        let buf_width = self.width;
+        let th_f = th as f32;
+        let inv_dest_h = 1.0 / dest_h as f32;
+        for dest_y in dest_y0..dest_y1 {
+            let dy = (dest_y as i32 - px_top) as f32;
+            let sy = ((dy * inv_dest_h * th_f) as u32).min(th - 1);
+            let tile_row_start = (sy * tw * 4) as usize;
+            let dest_row_start = (dest_y * buf_width * 4) as usize;
 
+            for (local_x, &sx) in src_x_tbl.iter().enumerate() {
+                let src_idx = tile_row_start + (sx * 4) as usize;
+                let dst_idx = dest_row_start + ((dest_x0 + local_x as u32) * 4) as usize;
                 self.buffer[dst_idx..dst_idx + 4]
-                    .copy_from_slice(&img.as_raw()[src_idx..src_idx + 4]);
+                    .copy_from_slice(&tile_pixels[src_idx..src_idx + 4]);
             }
         }
 
@@ -331,6 +355,53 @@ mod tests {
         let (x0, y0, x1, y1) = comp.dirty_rect();
         assert_eq!((x0, y0, x1, y1), (0, 0, 64, 32),
             "reset must mark the whole buffer dirty");
+    }
+
+    /// Builds a 4x4 PNG with a distinctive color in every corner so a
+    /// pixel-parity check can tell the blit reads the right source texel.
+    fn four_corner_png() -> Vec<u8> {
+        let mut img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 255]));
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));   // top-left: red
+        img.put_pixel(3, 0, image::Rgba([0, 255, 0, 255]));   // top-right: green
+        img.put_pixel(0, 3, image::Rgba([0, 0, 255, 255]));   // bottom-left: blue
+        img.put_pixel(3, 3, image::Rgba([255, 255, 0, 255])); // bottom-right: yellow
+        let mut out = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(img.as_raw(), 4, 4, image::ExtendedColorType::Rgba8)
+            .expect("encode four-corner png");
+        out
+    }
+
+    #[test]
+    fn test_composite_blit_writes_nonzero_pixels_at_tile_region() {
+        // Composite a tile whose source has distinctive corner colors and
+        // verify the destination region is non-black everywhere inside
+        // the blit rect (i.e. the new row-wise loop actually fills every
+        // pixel, not just some of them).
+        let mut comp = TileCompositor::new(128, 64);
+        comp.reset(1);
+        comp.mark_clean(); // drop reset's full-buffer dirty so we see only the blit
+        let coord = TileCoord { z: 1, x: 0, y: 0 };
+        assert!(comp.composite_tile(&coord, &four_corner_png()));
+
+        let (x0, y0, x1, y1) = comp.dirty_rect();
+        assert!(x1 > x0 && y1 > y0);
+
+        // Every pixel inside the dirty rect must carry source data
+        // (all our source pixels have alpha=255 so RGBA != 0).
+        let buf = comp.buffer();
+        let w = comp.width;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let idx = ((y * w + x) * 4) as usize;
+                let rgba = &buf[idx..idx + 4];
+                assert_ne!(
+                    rgba, [0, 0, 0, 0],
+                    "pixel ({}, {}) must be filled by the blit",
+                    x, y,
+                );
+            }
+        }
     }
 
     #[test]
