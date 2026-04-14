@@ -105,7 +105,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     //
     // Fresnel-Term: dot(view, normal) = 1.0 in der Mitte, ~0.0 am Rand
     // Invertiert: rim = 1 - dot → 0 in der Mitte, 1 am Rand
-    let rim = 1.0 - max(dot(view_dir, normal), 0.0);
+    // abs() instead of max() because the inside-out globe has normals
+    // facing away from the camera — dot is negative for the visible side.
+    // abs() makes rim=0 at center (facing camera) and rim=1 at edges.
+    let rim = 1.0 - abs(dot(view_dir, normal));
     //
     // Potenz steuert die Breite des Glows:
     //   Exponent 3 → schmaler, dezenter Rand (realistisch)

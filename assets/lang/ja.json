@@ -77,6 +77,9 @@
     "sat_click_hint": "クリックで追跡:",
     "sat_follow_tooltip": "クリックしてこの衛星を追跡",
     "sat_unfollow_tooltip": "クリックして追跡を停止",
+    "sat_all": "すべて",
+    "sat_none": "なし",
+    "sat_enable_first": "まず衛星を有効にしてください",
     "sat_follow_hint": "地球儀をドラッグして追跡を停止",
     "label_click_expand": "クリックで展開/折りたたみ",
     "label_copied": "クリップボードにコピー"

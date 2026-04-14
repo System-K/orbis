@@ -354,7 +354,11 @@ impl LayerProvider for WmsProvider {
                 );
                 let raw_bytes = fs::read(&cached)
                     .map_err(|e| format!("Could not read cache file: {}", e))?;
-                return decode_image(&raw_bytes, &self.info.label);
+                let mut image = decode_image(&raw_bytes, &self.info.label)?;
+                if self.reproject_mercator {
+                    image = reproject_mercator_to_equirect(image)?;
+                }
+                return Ok(image);
             }
         }
 
@@ -471,6 +475,12 @@ impl LayerProvider for WmsProvider {
 /// Web Mercator maps latitude with: y = ln(tan(π/4 + φ/2))
 /// This function inverts that mapping for each output row.
 /// Poles beyond ±85.05° are filled with transparent pixels.
+///
+/// Public wrapper for use by custom_source.rs.
+pub fn reproject_mercator_pub(src: LayerImage) -> Result<LayerImage, String> {
+    reproject_mercator_to_equirect(src)
+}
+
 fn reproject_mercator_to_equirect(src: LayerImage) -> Result<LayerImage, String> {
     let src_w = src.width as usize;
     let src_h = src.height as usize;
@@ -544,6 +554,13 @@ fn reproject_mercator_to_equirect(src: LayerImage) -> Result<LayerImage, String>
 }
 
 /// Decodes raw image bytes into RGBA pixel data.
+///
+/// Public wrapper for use by custom_source.rs.
+pub fn decode_image_pub(raw_bytes: &[u8], label: &str) -> Result<LayerImage, String> {
+    decode_image(raw_bytes, label)
+}
+
+/// Decodes raw image bytes into RGBA pixel data.
 fn decode_image(raw_bytes: &[u8], label: &str) -> Result<LayerImage, String> {
     let img = image::load_from_memory(raw_bytes)
         .map_err(|e| format!("Image could not be decoded: {}", e))?;
@@ -561,6 +578,11 @@ fn decode_image(raw_bytes: &[u8], label: &str) -> Result<LayerImage, String> {
         width,
         height,
     })
+}
+
+/// Public wrapper for cache freshness check (used by custom_source.rs).
+pub fn is_cache_fresh_pub(path: &PathBuf, max_age_secs: u64) -> bool {
+    is_cache_fresh(path, max_age_secs)
 }
 
 /// Checks if a cache file is fresh (younger than `max_age_secs`).

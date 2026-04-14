@@ -77,6 +77,9 @@
     "sat_click_hint": "Klikkaa seurataksesi:",
     "sat_follow_tooltip": "Klikkaa seurataksesi tätä satelliittia",
     "sat_unfollow_tooltip": "Klikkaa lopettaaksesi seuraamisen",
+    "sat_all": "Kaikki",
+    "sat_none": "Ei mitään",
+    "sat_enable_first": "Aktivoi satelliitti ensin",
     "sat_follow_hint": "Vedä maapalloa lopettaaksesi seuraamisen",
     "label_click_expand": "Klikkaa laajentaaksesi/tiivistääksesi",
     "label_copied": "Kopioitu leikepöydälle"

@@ -77,6 +77,9 @@
     "sat_click_hint": "Klicka för att följa:",
     "sat_follow_tooltip": "Klicka för att följa denna satellit",
     "sat_unfollow_tooltip": "Klicka för att sluta följa",
+    "sat_all": "Alla",
+    "sat_none": "Inga",
+    "sat_enable_first": "Aktivera satellit först",
     "sat_follow_hint": "Dra globen för att sluta följa",
     "label_click_expand": "Klicka för att expandera/komprimera",
     "label_copied": "Kopierat till urklipp"

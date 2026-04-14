@@ -92,6 +92,9 @@
     "sat_click_hint": "点击跟踪：",
     "sat_follow_tooltip": "点击跟踪该卫星",
     "sat_unfollow_tooltip": "点击停止跟踪",
+    "sat_all": "全部",
+    "sat_none": "无",
+    "sat_enable_first": "请先启用卫星",
     "sat_follow_hint": "拖动地球停止跟踪",
 
     "label_click_expand": "点击展开/收起群组",

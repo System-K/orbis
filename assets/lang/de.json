@@ -92,6 +92,9 @@
     "sat_click_hint": "Klick zum Verfolgen:",
     "sat_follow_tooltip": "Klick um diesem Satelliten zu folgen",
     "sat_unfollow_tooltip": "Klick um Verfolgung zu beenden",
+    "sat_all": "Alle",
+    "sat_none": "Keine",
+    "sat_enable_first": "Satellit erst aktivieren",
     "sat_follow_hint": "Globus ziehen um Verfolgung zu beenden",
 
     "label_click_expand": "Klicken zum Auf-/Zuklappen",

@@ -50,6 +50,9 @@ pub struct Settings {
     pub tile_cache_max_days: u32,
     /// Active tile source for zoom detail (e.g. "sentinel2", "osm")
     pub tile_source: String,
+    /// Optional user-provided zoom-level offset applied on top of the per-source
+    /// `recommended_zoom_bias`. No GUI — power-users edit `settings.json`.
+    pub tile_zoom_bias: i32,
 
     // --- M9: Active layers ---
     /// List of active layers (provider ID + settings).
@@ -83,6 +86,7 @@ impl Default for Settings {
             tile_cache_max_mb: 500,
             tile_cache_max_days: 7,
             tile_source: "sentinel2".to_string(),
+            tile_zoom_bias: 0,
             // Default: VIIRS True Color clouds + coordinate grid
             active_layers: vec![
                 LayerConfig {
@@ -192,5 +196,70 @@ impl Settings {
                 enabled: *enabled,
             })
             .collect();
+    }
+
+    /// Validates `tile_source` against a list of known source IDs and falls
+    /// back to the first valid one if the stored value is unknown.
+    ///
+    /// Called immediately after `load()` so the rest of the application never
+    /// sees a `tile_source` value that cannot be resolved by the tile registry.
+    /// Guards against hand-edited or corrupted `settings.json` files.
+    pub fn sanitize_tile_source(&mut self, valid: &[(String, String)]) {
+        if valid.is_empty() {
+            return;
+        }
+        if !valid.iter().any(|(id, _)| id == &self.tile_source) {
+            let fallback = valid[0].0.clone();
+            log::warn!(
+                "Settings: unknown tile_source '{}', falling back to '{}'",
+                self.tile_source, fallback,
+            );
+            self.tile_source = fallback;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_sources() -> Vec<(String, String)> {
+        vec![
+            ("sentinel2".to_string(), "Sentinel-2".to_string()),
+            ("osm".to_string(), "OpenStreetMap".to_string()),
+        ]
+    }
+
+    #[test]
+    fn sanitize_keeps_valid_source() {
+        let mut s = Settings::default();
+        s.tile_source = "osm".to_string();
+        s.sanitize_tile_source(&valid_sources());
+        assert_eq!(s.tile_source, "osm");
+    }
+
+    #[test]
+    fn sanitize_falls_back_when_unknown() {
+        let mut s = Settings::default();
+        s.tile_source = "mapbox-invalid-id".to_string();
+        s.sanitize_tile_source(&valid_sources());
+        assert_eq!(s.tile_source, "sentinel2");
+    }
+
+    #[test]
+    fn sanitize_falls_back_when_empty_string() {
+        let mut s = Settings::default();
+        s.tile_source = String::new();
+        s.sanitize_tile_source(&valid_sources());
+        assert_eq!(s.tile_source, "sentinel2");
+    }
+
+    #[test]
+    fn sanitize_noop_on_empty_valid_list() {
+        let mut s = Settings::default();
+        s.tile_source = "whatever".to_string();
+        s.sanitize_tile_source(&[]);
+        // no valid sources → leave alone (better than clearing)
+        assert_eq!(s.tile_source, "whatever");
     }
 }

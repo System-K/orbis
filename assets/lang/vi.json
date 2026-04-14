@@ -77,6 +77,9 @@
     "sat_click_hint": "Nhấp để theo dõi:",
     "sat_follow_tooltip": "Nhấp để theo dõi vệ tinh này",
     "sat_unfollow_tooltip": "Nhấp để dừng theo dõi",
+    "sat_all": "Tất cả",
+    "sat_none": "Không",
+    "sat_enable_first": "Kích hoạt vệ tinh trước",
     "sat_follow_hint": "Kéo địa cầu để dừng theo dõi",
     "label_click_expand": "Nhấp để mở rộng/thu gọn",
     "label_copied": "Đã sao chép vào bộ nhớ tạm"

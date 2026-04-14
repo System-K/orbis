@@ -77,6 +77,9 @@
     "sat_click_hint": "Kattintson a követéshez:",
     "sat_follow_tooltip": "Kattintson a műhold követéséhez",
     "sat_unfollow_tooltip": "Kattintson a követés leállításához",
+    "sat_all": "Mind",
+    "sat_none": "Egyik sem",
+    "sat_enable_first": "Először engedélyezze a műholdat",
     "sat_follow_hint": "Húzza a földgömböt a követés leállításához",
     "label_click_expand": "Kattintson a kibontáshoz/összecsukáshoz",
     "label_copied": "Vágólapra másolva"

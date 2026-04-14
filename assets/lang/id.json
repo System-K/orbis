@@ -77,6 +77,9 @@
     "sat_click_hint": "Klik untuk melacak:",
     "sat_follow_tooltip": "Klik untuk melacak satelit ini",
     "sat_unfollow_tooltip": "Klik untuk berhenti melacak",
+    "sat_all": "Semua",
+    "sat_none": "Tidak ada",
+    "sat_enable_first": "Aktifkan satelit terlebih dahulu",
     "sat_follow_hint": "Seret bola dunia untuk berhenti melacak",
     "label_click_expand": "Klik untuk memperluas/menciutkan",
     "label_copied": "Disalin ke papan klip"

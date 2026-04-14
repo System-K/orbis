@@ -270,10 +270,47 @@ impl ProviderCatalog {
 
 /// Builds the default catalog with all built-in providers.
 ///
+// =============================================================================
+// Built-in: Coordinate Grid Provider
+// =============================================================================
+
+/// Placeholder provider so the coordinate grid appears in the catalog.
+/// The actual texture is generated procedurally in main.rs, not downloaded.
+struct GridProvider;
+
+impl LayerProvider for GridProvider {
+    fn info(&self) -> &ProviderInfo {
+        static INFO: std::sync::OnceLock<ProviderInfo> = std::sync::OnceLock::new();
+        INFO.get_or_init(|| ProviderInfo {
+            id: "builtin:grid".to_string(),
+            label: "Coordinate Grid".to_string(),
+            description: "Latitude/longitude grid lines at 10\u{00b0} intervals.".to_string(),
+            category: ProviderCategory::Basemap,
+            attribution: String::new(),
+            supports_date: false,
+            default_opacity: 0.3,
+            legend_url: None,
+        })
+    }
+
+    fn fetch(&self, _date: &NaiveDate, _cache_dir: &Path) -> Result<LayerImage, String> {
+        Err("Grid layer is procedurally generated (handled by main loop)".to_string())
+    }
+}
+
+// =============================================================================
+// Catalog Builder
+// =============================================================================
+
+/// Builds the complete provider catalog with all built-in and custom sources.
+///
 /// Called once at startup. This is the single place where all
 /// built-in data sources are registered.
 pub fn build_default_catalog() -> ProviderCatalog {
     let mut catalog = ProviderCatalog::new();
+
+    // Built-in: Coordinate Grid (procedurally generated, not downloaded)
+    catalog.register(Box::new(GridProvider));
 
     // Register all GIBS providers
     for provider in crate::gibs::all_gibs_providers() {
@@ -282,6 +319,12 @@ pub fn build_default_catalog() -> ProviderCatalog {
 
     // Register all external WMS providers (M10)
     for provider in crate::wms::all_wms_providers() {
+        catalog.register(provider);
+    }
+
+    // Register custom user-defined sources (M17)
+    let custom_config = crate::custom_source::load_config();
+    for provider in crate::custom_source::create_providers(&custom_config) {
         catalog.register(provider);
     }
 

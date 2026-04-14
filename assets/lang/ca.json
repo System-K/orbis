@@ -77,6 +77,9 @@
     "sat_click_hint": "Clic per rastrejar:",
     "sat_follow_tooltip": "Clic per rastrejar aquest satèl·lit",
     "sat_unfollow_tooltip": "Clic per deixar de rastrejar",
+    "sat_all": "Tots",
+    "sat_none": "Cap",
+    "sat_enable_first": "Activeu primer el satèl·lit",
     "sat_follow_hint": "Arrossegueu el globus per deixar de rastrejar",
     "label_click_expand": "Clic per expandir/contraure",
     "label_copied": "Copiat al porta-retalls"

@@ -77,6 +77,9 @@
     "sat_click_hint": "Klik om te volgen:",
     "sat_follow_tooltip": "Klik om deze satelliet te volgen",
     "sat_unfollow_tooltip": "Klik om te stoppen met volgen",
+    "sat_all": "Alle",
+    "sat_none": "Geen",
+    "sat_enable_first": "Activeer satelliet eerst",
     "sat_follow_hint": "Sleep de wereldbol om te stoppen met volgen",
     "label_click_expand": "Klik om uit te vouwen/in te klappen",
     "label_copied": "Gekopieerd naar klembord"

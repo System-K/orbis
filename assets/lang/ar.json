@@ -92,6 +92,9 @@
     "sat_click_hint": "انقر للمتابعة:",
     "sat_follow_tooltip": "انقر لمتابعة هذا القمر الصناعي",
     "sat_unfollow_tooltip": "انقر لإيقاف المتابعة",
+    "sat_all": "الكل",
+    "sat_none": "لا شيء",
+    "sat_enable_first": "قم بتمكين القمر الصناعي أولاً",
     "sat_follow_hint": "اسحب الكرة الأرضية لإيقاف التتبع",
 
     "label_click_expand": "انقر لتوسيع/طي المجموعة",

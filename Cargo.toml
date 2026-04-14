@@ -26,3 +26,4 @@ rand = "0.9"               # Zufallszahlen für Sternenfeld-Generierung
 earcutr = "0.4"            # Polygon-Triangulation (Earcut-Algorithmus)
 rfd = "0.15"               # Native File-Dialog (Open/Save)
 sgp4 = { version = "2", features = ["serde"] }  # SGP4/SDP4 Satelliten-Propagation + OMM-Parsing
+quick-xml = "0.37"            # XML-Parsing (WMS GetCapabilities, KML, GeoRSS)

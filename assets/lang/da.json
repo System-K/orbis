@@ -77,6 +77,9 @@
     "sat_click_hint": "Klik for at følge:",
     "sat_follow_tooltip": "Klik for at følge denne satellit",
     "sat_unfollow_tooltip": "Klik for at stoppe med at følge",
+    "sat_all": "Alle",
+    "sat_none": "Ingen",
+    "sat_enable_first": "Aktivér satellit først",
     "sat_follow_hint": "Træk globussen for at stoppe med at følge",
     "label_click_expand": "Klik for at udvide/skjule",
     "label_copied": "Kopieret til udklipsholder"

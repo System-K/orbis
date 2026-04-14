@@ -77,6 +77,9 @@
     "sat_click_hint": "Click pentru a urmări:",
     "sat_follow_tooltip": "Click pentru a urmări acest satelit",
     "sat_unfollow_tooltip": "Click pentru a opri urmărirea",
+    "sat_all": "Toate",
+    "sat_none": "Niciuna",
+    "sat_enable_first": "Activați mai întâi satelitul",
     "sat_follow_hint": "Trageți globul pentru a opri urmărirea",
     "label_click_expand": "Click pentru a extinde/restrânge",
     "label_copied": "Copiat în clipboard"

@@ -92,6 +92,9 @@
     "sat_click_hint": "Cliquer pour suivre :",
     "sat_follow_tooltip": "Cliquer pour suivre ce satellite",
     "sat_unfollow_tooltip": "Cliquer pour arrêter le suivi",
+    "sat_all": "Tous",
+    "sat_none": "Aucun",
+    "sat_enable_first": "Activer le satellite d'abord",
     "sat_follow_hint": "Faire glisser le globe pour arrêter le suivi",
 
     "label_click_expand": "Cliquer pour déplier/replier",

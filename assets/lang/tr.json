@@ -77,6 +77,9 @@
     "sat_click_hint": "İzlemek için tıklayın:",
     "sat_follow_tooltip": "Bu uyduyu izlemek için tıklayın",
     "sat_unfollow_tooltip": "İzlemeyi durdurmak için tıklayın",
+    "sat_all": "Tümü",
+    "sat_none": "Hiçbiri",
+    "sat_enable_first": "Önce uyduyu etkinleştirin",
     "sat_follow_hint": "İzlemeyi durdurmak için küreyi sürükleyin",
     "label_click_expand": "Genişletmek/daraltmak için tıklayın",
     "label_copied": "Panoya kopyalandı"

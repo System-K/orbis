@@ -92,6 +92,9 @@
     "sat_click_hint": "Click to follow:",
     "sat_follow_tooltip": "Click to follow this satellite",
     "sat_unfollow_tooltip": "Click to stop following",
+    "sat_all": "All",
+    "sat_none": "None",
+    "sat_enable_first": "Enable satellite first",
     "sat_follow_hint": "Drag globe to stop following",
 
     "label_click_expand": "Click to expand/collapse cluster",

@@ -120,7 +120,7 @@ impl Camera {
     ///
     /// Same formula as sphere generation (see mesh.rs),
     /// just with yaw/pitch instead of theta/phi.
-    fn eye_position(&self) -> Vec3 {
+    pub fn eye_position(&self) -> Vec3 {
         let x = self.distance * self.pitch.cos() * self.yaw.sin();
         let y = self.distance * self.pitch.sin();
         let z = self.distance * self.pitch.cos() * self.yaw.cos();

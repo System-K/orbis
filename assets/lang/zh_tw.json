@@ -77,6 +77,9 @@
     "sat_click_hint": "點擊追蹤:",
     "sat_follow_tooltip": "點擊追蹤此衛星",
     "sat_unfollow_tooltip": "點擊停止追蹤",
+    "sat_all": "全部",
+    "sat_none": "無",
+    "sat_enable_first": "請先啟用衛星",
     "sat_follow_hint": "拖曳地球儀以停止追蹤",
     "label_click_expand": "點擊展開/收合",
     "label_copied": "已複製到剪貼簿"

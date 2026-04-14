@@ -77,6 +77,9 @@
     "sat_click_hint": "Klikněte pro sledování:",
     "sat_follow_tooltip": "Klikněte pro sledování tohoto satelitu",
     "sat_unfollow_tooltip": "Klikněte pro ukončení sledování",
+    "sat_all": "Vše",
+    "sat_none": "Žádné",
+    "sat_enable_first": "Nejprve aktivujte satelit",
     "sat_follow_hint": "Táhněte glóbem pro ukončení sledování",
     "label_click_expand": "Klikněte pro rozbalení/sbalení",
     "label_copied": "Zkopírováno do schránky"
