@@ -232,22 +232,32 @@ impl TileManager {
         // render thread, so we cap the number of composites per frame
         // to keep the frame budget manageable. Tiles beyond the cap
         // will be picked up on subsequent frames.
+        //
+        // Enqueueing downloads is cheap (just a channel send), so we
+        // always enqueue cache misses regardless of the composite cap.
+        // This ensures network fetches start immediately during a pan
+        // instead of being delayed by multiple frames while cached
+        // tiles drain the composite budget.
         let ext = source.extension();
         let current_gen = self.pool.current_gen();
         let mut composites_this_frame: usize = 0;
         for coord in &visible {
             if self.compositor.has_tile(coord) { continue; }
-            if composites_this_frame >= MAX_COMPOSITES_PER_FRAME {
-                // Already hit the budget — don't even check the cache
-                // (which does filesystem I/O); defer to next frame.
-                continue;
+            // Try cache first (only if we have budget — avoids
+            // filesystem I/O when we'd just throw the data away).
+            if composites_this_frame < MAX_COMPOSITES_PER_FRAME {
+                if let Some(data) = self.cache.get(&source.id, coord, ext) {
+                    self.compositor.composite_tile(coord, &data);
+                    composites_this_frame += 1;
+                    self.metrics.cache_hits = self.metrics.cache_hits.wrapping_add(1);
+                    continue;
+                }
             }
-            if let Some(data) = self.cache.get(&source.id, coord, ext) {
-                self.compositor.composite_tile(coord, &data);
-                composites_this_frame += 1;
-                self.metrics.cache_hits = self.metrics.cache_hits.wrapping_add(1);
-                continue;
-            }
+            // Cache miss (or over budget) — enqueue for download if not
+            // already in flight. If the tile is actually cached but we
+            // skipped it due to the cap, the worker's `fetch_tile` will
+            // hit the disk cache and return immediately; the result
+            // composites next frame.
             let key = (source.id.clone(), *coord);
             if self.in_flight.contains(&key) { continue; }
             self.in_flight.insert(key);
