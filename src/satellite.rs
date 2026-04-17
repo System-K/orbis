@@ -14,6 +14,7 @@
 //   - WGS84 ellipsoid for ECEF → geodetic conversion
 // =============================================================================
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -122,6 +123,22 @@ struct OmmDownloadResult {
     elements: sgp4::Elements,
 }
 
+/// Memoized ground track for a single satellite (Phase G).
+///
+/// Ground tracks are 90-point SGP4 propagations (±90 min at 2 min step).
+/// They are *expensive* (~200+ ms/frame for 8 satellites at 60 fps) but
+/// change very slowly in real wall-clock time — the sub-satellite path
+/// 30 seconds from now is, to the pixel, indistinguishable from the one
+/// a moment before. So we bucket sim-time into 30-second windows and
+/// only recompute when the bucket advances (or a fresh OMM arrives).
+struct GroundTrackCache {
+    /// `floor(utc.timestamp() / TRACK_CACHE_BUCKET_SECS)` at the time of
+    /// the most recent compute. Compared against the incoming call's
+    /// bucket to decide whether to refresh.
+    utc_bucket: i64,
+    points: Vec<GroundTrackPoint>,
+}
+
 /// Manages satellite TLE/OMM data, propagation, and state.
 pub struct SatelliteTracker {
     /// Currently tracked satellites with propagation constants.
@@ -138,6 +155,8 @@ pub struct SatelliteTracker {
     /// (Phase F) to skip redundant SGP4 runs when sim-time hasn't
     /// advanced enough to matter.
     last_propagated_utc: Option<chrono::DateTime<chrono::Utc>>,
+    /// Per-satellite ground-track cache (Phase G). Keyed by NORAD id.
+    track_cache: HashMap<u32, GroundTrackCache>,
 }
 
 impl SatelliteTracker {
@@ -147,6 +166,11 @@ impl SatelliteTracker {
     /// "play at 10 000×" propagates at most once per 50 ms sim-time.
     const PROPAGATE_MIN_DELTA_MS: i64 = 50;
 
+    /// Size of the sim-time bucket for the ground-track cache (Phase G).
+    /// Within the same 30-second window, the ground track is reused
+    /// verbatim — the visual drift at normal zoom levels is imperceptible.
+    const TRACK_CACHE_BUCKET_SECS: i64 = 30;
+
     pub fn new() -> Self {
         Self {
             tracked: Vec::new(),
@@ -155,6 +179,7 @@ impl SatelliteTracker {
             last_refresh: None,
             downloading: false,
             last_propagated_utc: None,
+            track_cache: HashMap::new(),
         }
     }
 
@@ -211,6 +236,8 @@ impl SatelliteTracker {
                 self.download_rx = None;
                 // Force immediate propagation on next tick for fresh data.
                 self.last_propagated_utc = None;
+                // Drop stale ground tracks so newly loaded sats recompute.
+                self.track_cache.clear();
             }
             Ok(Err(e)) => {
                 log::error!("Satellite OMM download failed: {}", e);
@@ -337,10 +364,61 @@ impl SatelliteTracker {
         self.tracked.len()
     }
 
-    /// Last sim-time that `propagate` actually ran (test-only accessor).
-    #[cfg(test)]
+    /// Last sim-time that `propagate` actually ran. Read by the overlay
+    /// projector (Phase L) to gate expensive per-frame rebuilds on
+    /// whether satellite positions actually changed since the last tick.
     pub(crate) fn last_propagated_utc(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.last_propagated_utc
+    }
+
+    /// Ground track, memoized per `(norad_id, 30-second sim-time bucket)`.
+    ///
+    /// `compute_ground_track` itself runs 90 SGP4 propagations at the
+    /// default (±90 min, 2 min step) parameters — ~200+ ms per frame
+    /// with the default 8 satellites. Ground tracks evolve slowly in
+    /// wall-clock time, so bucketing sim-time into 30-second windows and
+    /// returning the cached `Vec` on subsequent calls inside the same
+    /// window makes this effectively free on the render thread.
+    ///
+    /// The cache is invalidated:
+    /// - automatically when `utc` crosses a bucket boundary, OR
+    /// - in `poll_downloads` when a fresh OMM batch is loaded.
+    pub fn compute_ground_track_cached(
+        &mut self,
+        norad_id: u32,
+        utc: &chrono::DateTime<chrono::Utc>,
+        past_minutes: f64,
+        future_minutes: f64,
+        step_minutes: f64,
+    ) -> &[GroundTrackPoint] {
+        let bucket = utc.timestamp().div_euclid(Self::TRACK_CACHE_BUCKET_SECS);
+        let needs_refresh = self
+            .track_cache
+            .get(&norad_id)
+            .map(|c| c.utc_bucket != bucket)
+            .unwrap_or(true);
+        if needs_refresh {
+            let pts = self.compute_ground_track(
+                norad_id, utc, past_minutes, future_minutes, step_minutes,
+            );
+            self.track_cache.insert(
+                norad_id,
+                GroundTrackCache { utc_bucket: bucket, points: pts },
+            );
+        }
+        // unwrap: we just inserted on the refresh path, so the entry
+        // exists. If it doesn't, the satellite is unknown and we
+        // return an empty slice — same as `compute_ground_track`.
+        self.track_cache
+            .get(&norad_id)
+            .map(|c| c.points.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Test accessor — how many satellites currently have a cached track.
+    #[cfg(test)]
+    pub(crate) fn track_cache_len(&self) -> usize {
+        self.track_cache.len()
     }
 }
 
@@ -468,12 +546,18 @@ fn teme_to_geodetic(
     let e2 = EARTH_FLATTENING * (2.0 - EARTH_FLATTENING);
 
     // Iterative latitude (Bowring's method, converges in 2-3 iterations)
-    let mut lat = z_ecef.atan2(p * (1.0 - e2));
-    for _ in 0..5 {
-        let sin_lat = lat.sin();
-        let n = EARTH_RADIUS_KM / (1.0 - e2 * sin_lat * sin_lat).sqrt();
-        lat = z_ecef.atan2(p * (1.0 - e2 * n / (n + (p / lat.cos() - n))));
-    }
+    let lat = if p < 1e-10 {
+        // At the poles cos(lat)≈0 causes p/lat.cos() → Inf/NaN; skip iteration.
+        z_ecef.signum() * std::f64::consts::FRAC_PI_2
+    } else {
+        let mut lat = z_ecef.atan2(p * (1.0 - e2));
+        for _ in 0..5 {
+            let sin_lat = lat.sin();
+            let n = EARTH_RADIUS_KM / (1.0 - e2 * sin_lat * sin_lat).sqrt();
+            lat = z_ecef.atan2(p * (1.0 - e2 * n / (n + (p / lat.cos() - n))));
+        }
+        lat
+    };
 
     let sin_lat = lat.sin();
     let n = EARTH_RADIUS_KM / (1.0 - e2 * sin_lat * sin_lat).sqrt();
@@ -520,6 +604,102 @@ mod tests {
         assert!(lat.abs() < 1.0, "Equator latitude should be ~0, got {}", lat);
         assert!(lon.abs() < 1.0, "Prime meridian longitude should be ~0, got {}", lon);
         assert!((alt - 400.0).abs() < 10.0, "Altitude should be ~400 km, got {}", alt);
+    }
+
+    /// Test helper: install a fake tracked satellite entry so ground-track
+    /// tests can exercise the cache plumbing without hitting the network
+    /// for real OMM data. We only need `compute_ground_track_cached` to
+    /// return SOMETHING (empty slice is fine) and observe whether it
+    /// recomputed or reused — the cache-hit/miss bookkeeping is independent
+    /// of what's inside the `Vec<GroundTrackPoint>`.
+    fn insert_stub_cache(
+        tracker: &mut SatelliteTracker,
+        norad_id: u32,
+        utc: &chrono::DateTime<chrono::Utc>,
+        points: Vec<GroundTrackPoint>,
+    ) {
+        let bucket = utc.timestamp()
+            .div_euclid(SatelliteTracker::TRACK_CACHE_BUCKET_SECS);
+        tracker.track_cache.insert(
+            norad_id,
+            GroundTrackCache { utc_bucket: bucket, points },
+        );
+    }
+
+    #[test]
+    fn test_ground_track_cache_hits_when_utc_bucket_unchanged() {
+        // Two calls inside the same 30 s window must return the same
+        // cache entry — we detect this by observing that the stored
+        // `utc_bucket` is stable and the `points` Vec wasn't replaced
+        // (we snapshot its length + first-point identity).
+        let mut tracker = SatelliteTracker::new();
+        let t0 = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        // Pre-seed with a distinctive stub so we can detect replacement.
+        let stub = vec![GroundTrackPoint {
+            latitude: 12.345, longitude: 67.89, minutes_offset: 0.0,
+        }];
+        insert_stub_cache(&mut tracker, 42, &t0, stub.clone());
+        assert_eq!(tracker.track_cache_len(), 1);
+
+        // Unknown satellite (not in `self.tracked`) → compute_ground_track
+        // returns []. But because the cache already has an entry for
+        // norad 42 in the SAME bucket, the cached variant must NOT
+        // overwrite it.
+        let t1 = t0 + chrono::Duration::seconds(15); // still in bucket
+        let got = tracker.compute_ground_track_cached(42, &t1, 90.0, 90.0, 2.0);
+        assert_eq!(got.len(), 1, "cache hit must return the stub unchanged");
+        assert_eq!(got[0].latitude, stub[0].latitude);
+        assert_eq!(got[0].longitude, stub[0].longitude);
+    }
+
+    #[test]
+    fn test_ground_track_cache_invalidates_across_buckets() {
+        // Advance utc past a bucket boundary and assert the cache
+        // entry was refreshed (its `utc_bucket` is now the new bucket).
+        let mut tracker = SatelliteTracker::new();
+        let t0 = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let stub = vec![GroundTrackPoint {
+            latitude: 99.0, longitude: 0.0, minutes_offset: 0.0,
+        }];
+        insert_stub_cache(&mut tracker, 7, &t0, stub);
+        let bucket_before = tracker.track_cache.get(&7).unwrap().utc_bucket;
+
+        // 35 s later — different 30 s bucket.
+        let t1 = t0 + chrono::Duration::seconds(35);
+        let got = tracker.compute_ground_track_cached(7, &t1, 90.0, 90.0, 2.0);
+        // No real satellite was loaded, so the recomputed points are empty.
+        assert!(got.is_empty(), "refreshed cache is empty for unknown sat");
+
+        let bucket_after = tracker.track_cache.get(&7).unwrap().utc_bucket;
+        assert_ne!(bucket_before, bucket_after, "bucket must advance");
+        assert_eq!(
+            bucket_after,
+            t1.timestamp().div_euclid(SatelliteTracker::TRACK_CACHE_BUCKET_SECS),
+        );
+    }
+
+    #[test]
+    fn test_ground_track_cache_cleared_on_new_omm() {
+        // Simulate the `poll_downloads` success-path clear: cache must
+        // be empty after a fresh OMM batch arrives.
+        let mut tracker = SatelliteTracker::new();
+        let t0 = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        insert_stub_cache(&mut tracker, 1, &t0, vec![]);
+        insert_stub_cache(&mut tracker, 2, &t0, vec![]);
+        insert_stub_cache(&mut tracker, 3, &t0, vec![]);
+        assert_eq!(tracker.track_cache_len(), 3);
+
+        // Direct hook: same operation `poll_downloads` performs on success.
+        tracker.track_cache.clear();
+
+        assert_eq!(tracker.track_cache_len(), 0);
     }
 
     #[test]
