@@ -134,9 +134,19 @@ pub struct SatelliteTracker {
     last_refresh: Option<Instant>,
     /// Whether a download is in progress.
     downloading: bool,
+    /// Last sim-time `propagate` actually ran for. Used by the throttle
+    /// (Phase F) to skip redundant SGP4 runs when sim-time hasn't
+    /// advanced enough to matter.
+    last_propagated_utc: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl SatelliteTracker {
+    /// Minimum sim-time (ms) between `propagate` runs. At 50 ms this is
+    /// a no-op in realtime (frame time is ~16 ms but sim-time advance
+    /// is also ~16 ms, so the next frame crosses the threshold), while
+    /// "play at 10 000×" propagates at most once per 50 ms sim-time.
+    const PROPAGATE_MIN_DELTA_MS: i64 = 50;
+
     pub fn new() -> Self {
         Self {
             tracked: Vec::new(),
@@ -144,6 +154,7 @@ impl SatelliteTracker {
             download_rx: None,
             last_refresh: None,
             downloading: false,
+            last_propagated_utc: None,
         }
     }
 
@@ -198,6 +209,8 @@ impl SatelliteTracker {
                 self.last_refresh = Some(Instant::now());
                 self.downloading = false;
                 self.download_rx = None;
+                // Force immediate propagation on next tick for fresh data.
+                self.last_propagated_utc = None;
             }
             Ok(Err(e)) => {
                 log::error!("Satellite OMM download failed: {}", e);
@@ -214,8 +227,19 @@ impl SatelliteTracker {
 
     /// Propagates all tracked satellites to the given UTC time.
     ///
-    /// Updates `self.states` with current positions.
+    /// Updates `self.states` with current positions. Skips the run if
+    /// sim-time hasn't advanced by at least `PROPAGATE_MIN_DELTA_MS`
+    /// since the last propagation (saves ~0.5–2 ms/frame of SGP4 work).
     pub fn propagate(&mut self, utc: &chrono::DateTime<chrono::Utc>) {
+        // Throttle: skip if sim-time hasn't moved enough.
+        if let Some(last) = self.last_propagated_utc {
+            let delta_ms = utc.signed_duration_since(last).num_milliseconds().abs();
+            if delta_ms < Self::PROPAGATE_MIN_DELTA_MS {
+                return;
+            }
+        }
+        self.last_propagated_utc = Some(*utc);
+
         self.states.clear();
         let now_jd = utc_to_jd(utc);
 
@@ -311,6 +335,12 @@ impl SatelliteTracker {
     /// Number of tracked satellites.
     pub fn count(&self) -> usize {
         self.tracked.len()
+    }
+
+    /// Last sim-time that `propagate` actually ran (test-only accessor).
+    #[cfg(test)]
+    pub(crate) fn last_propagated_utc(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.last_propagated_utc
     }
 }
 
@@ -490,6 +520,41 @@ mod tests {
         assert!(lat.abs() < 1.0, "Equator latitude should be ~0, got {}", lat);
         assert!(lon.abs() < 1.0, "Prime meridian longitude should be ~0, got {}", lon);
         assert!((alt - 400.0).abs() < 10.0, "Altitude should be ~400 km, got {}", alt);
+    }
+
+    #[test]
+    fn test_propagate_skipped_within_threshold() {
+        // propagate() called twice with sim-time < 50 ms apart:
+        // the second call must be a no-op (last_propagated_utc unchanged).
+        let mut tracker = SatelliteTracker::new();
+        let t0 = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        tracker.propagate(&t0);
+        assert_eq!(tracker.last_propagated_utc(), Some(t0));
+
+        // Advance by only 10 ms — below the 50 ms threshold.
+        let t1 = t0 + chrono::Duration::milliseconds(10);
+        tracker.propagate(&t1);
+        // Should still show t0 — the second call was skipped.
+        assert_eq!(tracker.last_propagated_utc(), Some(t0));
+    }
+
+    #[test]
+    fn test_propagate_runs_when_utc_advances() {
+        // propagate() called twice with sim-time >= 50 ms apart:
+        // the second call must execute (last_propagated_utc updates).
+        let mut tracker = SatelliteTracker::new();
+        let t0 = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        tracker.propagate(&t0);
+        assert_eq!(tracker.last_propagated_utc(), Some(t0));
+
+        // Advance by 100 ms — above the 50 ms threshold.
+        let t1 = t0 + chrono::Duration::milliseconds(100);
+        tracker.propagate(&t1);
+        assert_eq!(tracker.last_propagated_utc(), Some(t1));
     }
 
     #[test]
