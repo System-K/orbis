@@ -107,6 +107,16 @@ pub struct TileMetrics {
     pub gen: u64,
 }
 
+/// Maximum number of tiles decoded + composited from the disk cache in a
+/// single frame.  Image decoding (JPEG/PNG via the `image` crate) is the
+/// dominant per-tile cost on the render thread — roughly 1-5 ms each.
+/// Capping it at 4 per frame keeps the frame budget under 20 ms even on
+/// a zoom change (which invalidates the whole composited set and forces
+/// all visible tiles to be re-decoded).  Tiles beyond the cap are
+/// deferred to subsequent frames — visually, tiles "pop in" over 3-4
+/// frames instead of freezing for 60-200 ms.
+const MAX_COMPOSITES_PER_FRAME: usize = 4;
+
 /// Single owner of the tile subsystem.
 pub struct TileManager {
     cache_dir: PathBuf,
@@ -216,13 +226,25 @@ impl TileManager {
         let visible = TileCoord::tiles_in_view(lat_n, lat_s, lon_w, lon_e, zoom);
         self.metrics.visible_tiles = visible.len() as u32;
 
-        // Missing tiles: cache-hit -> composite sync; miss -> enqueue
+        // Missing tiles: cache-hit -> composite sync; miss -> enqueue.
+        //
+        // Compositing involves JPEG/PNG decoding (1-5 ms each) on the
+        // render thread, so we cap the number of composites per frame
+        // to keep the frame budget manageable. Tiles beyond the cap
+        // will be picked up on subsequent frames.
         let ext = source.extension();
         let current_gen = self.pool.current_gen();
+        let mut composites_this_frame: usize = 0;
         for coord in &visible {
             if self.compositor.has_tile(coord) { continue; }
+            if composites_this_frame >= MAX_COMPOSITES_PER_FRAME {
+                // Already hit the budget — don't even check the cache
+                // (which does filesystem I/O); defer to next frame.
+                continue;
+            }
             if let Some(data) = self.cache.get(&source.id, coord, ext) {
                 self.compositor.composite_tile(coord, &data);
+                composites_this_frame += 1;
                 self.metrics.cache_hits = self.metrics.cache_hits.wrapping_add(1);
                 continue;
             }
@@ -238,7 +260,9 @@ impl TileManager {
             });
         }
 
-        // Drain results, filter stale
+        // Drain results, filter stale. Worker results also count against
+        // the per-frame composite cap — downloaded tiles arrive decoded
+        // as raw bytes (still need image::load_from_memory).
         let results = self.pool.poll();
         let live_gen = self.pool.current_gen();
         for r in results {
@@ -246,7 +270,16 @@ impl TileManager {
             if r.gen < live_gen { continue; }
             if r.source_id != self.prev_source { continue; }
             if let Ok(data) = r.data {
-                self.compositor.composite_tile(&r.coord, &data);
+                if composites_this_frame < MAX_COMPOSITES_PER_FRAME {
+                    self.compositor.composite_tile(&r.coord, &data);
+                    composites_this_frame += 1;
+                } else {
+                    // Over budget — cache the data so it's a hit next
+                    // frame instead of another network fetch.
+                    self.cache.put(&r.source_id, &r.coord, ext, &data);
+                    // Put it back as "not in flight" so the cache-hit
+                    // path picks it up next frame.
+                }
             }
         }
 
