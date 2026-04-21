@@ -703,6 +703,37 @@ impl GpuState {
         // Periodic refresh of cache-usage + metrics for the GUI status line
         self.gui_state.cache_usage_mb = self.tile_manager.cache_size_mb();
         self.gui_state.tile_metrics = self.tile_manager.metrics().clone();
+
+        // Compute meters-per-pixel (vertical) for the scale HUD.
+        // Differs between view modes:
+        //   - 3D globe: perspective frustum at the visible globe surface.
+        //               Near-surface depth ≈ distance - 1 (Earth radius = 1
+        //               world unit). visible world height = 2·(d−1)·tan(fov/2).
+        //               One world unit == Earth equatorial radius.
+        //   - 2D map: orthographic. Visible world height = QUAD_HALF_WIDTH /
+        //              map_zoom. The quad (height 4.0 world units) represents
+        //              180° of latitude, so one world unit ≈ πR/4 ≈ 5 009 377 m.
+        // A 0.0 result (screen too small etc.) tells the HUD to hide.
+        const EARTH_RADIUS_M: f32 = 6_378_137.0;
+        const MAP_METERS_PER_WORLD_UNIT: f32 =
+            std::f32::consts::PI * EARTH_RADIUS_M / 4.0;
+        let screen_h = self.config.height as f32;
+        self.gui_state.scale_meters_per_pixel = if screen_h <= 0.0 {
+            0.0
+        } else {
+            match self.view_mode {
+                ViewMode::Globe3D => {
+                    let near = (self.camera.distance - 1.0).max(0.1);
+                    let visible_world_h =
+                        2.0 * near * (self.camera.fov_y / 2.0).tan();
+                    visible_world_h * EARTH_RADIUS_M / screen_h
+                }
+                ViewMode::Map2D => {
+                    let visible_world_h = QUAD_HALF_WIDTH / self.map_zoom;
+                    visible_world_h * MAP_METERS_PER_WORLD_UNIT / screen_h
+                }
+            }
+        };
     }
 
     /// Smoothly tracks a satellite with the camera (M13c).

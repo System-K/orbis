@@ -24,6 +24,7 @@ mod live;
 pub mod satellites;
 pub mod legend;
 pub mod labels;
+mod scale;
 
 // Re-export all public types used by main.rs and other modules
 pub use state::{
@@ -310,4 +311,9 @@ pub fn draw_ui(ctx: &egui::Context, gui_state: &mut GuiState, catalog: &Provider
     // Floating panels
     legend::draw_legend(ctx, gui_state, catalog);
     custom::draw_custom_source_dialog(ctx, gui_state);
+
+    // HUD: tile zoom + scale bar (lower-left of the viewport).
+    // Drawn last so it sits on top and uses `available_rect()` from
+    // after the panels above have claimed their space.
+    scale::draw_scale_hud(ctx, gui_state);
 }

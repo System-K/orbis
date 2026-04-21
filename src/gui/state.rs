@@ -210,6 +210,13 @@ pub struct GuiState {
     pub tile_sources: Vec<(String, String)>,
     /// Latest TileManager metrics snapshot (refreshed each frame by main.rs)
     pub tile_metrics: crate::tile::TileMetrics,
+    /// Meters of ground distance covered by one screen pixel (vertical).
+    ///
+    /// Set each frame by `main.rs::update_tiles` based on the active view
+    /// mode + camera state. Consumed by `gui::scale::draw_scale_hud` to
+    /// render the scale bar + distance label. 0.0 means "not yet computed";
+    /// the HUD hides itself in that case.
+    pub scale_meters_per_pixel: f32,
 
     // --- Custom Sources (M17e) ---
     /// Whether the "Add Custom Source" dialog window is open
@@ -363,6 +370,7 @@ impl GuiState {
                 .map(|s| (s.id.clone(), s.name.clone()))
                 .collect(),
             tile_metrics: crate::tile::TileMetrics::default(),
+            scale_meters_per_pixel: 0.0,
             custom_source_dialog_open: false,
             custom_source_form: CustomSourceForm::default(),
             custom_sources_config: crate::custom_source::load_config(),
