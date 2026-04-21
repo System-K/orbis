@@ -26,12 +26,19 @@ pub struct Job {
 }
 
 /// Result of a tile fetch attempt.
+///
+/// Phase H: the worker decodes the tile to an `image::RgbaImage` on its own
+/// thread before handing back to the manager. Previously this returned the
+/// raw bytes and the render thread ran `image::load_from_memory` — a 1–5 ms
+/// per-tile hit that caused the zoom-freeze symptom. Decoding in parallel
+/// across the worker pool keeps the render thread free.
 pub struct WorkerResult {
     pub gen: u64,
     pub coord: TileCoord,
     pub source_id: String,
-    /// Ok(data) on success (from cache or network). Err on failure or stale.
-    pub data: Result<Vec<u8>, String>,
+    /// Ok(decoded) on success (from cache or network, then decoded on this
+    /// worker thread). Err on fetch failure, decode failure, or stale job.
+    pub data: Result<image::RgbaImage, String>,
 }
 
 /// Number of concurrent download threads.
@@ -139,18 +146,28 @@ fn worker_loop(
             continue;
         }
 
-        let result = fetch_tile(
+        // Phase H: fetch + decode on the worker thread. A cache-hit tile is
+        // disk-read here and decoded here — the render thread never sees
+        // raw tile bytes.
+        let fetched = fetch_tile(
             &job.source,
             &job.coord,
             &cache,
             job.date.as_deref(),
             DEFAULT_FETCH_TIMEOUT,
         );
+        let decoded = match fetched {
+            Ok(bytes) => match image::load_from_memory(&bytes) {
+                Ok(img) => Ok(img.to_rgba8()),
+                Err(e) => Err(format!("tile decode failed ({}): {}", job.coord, e)),
+            },
+            Err(e) => Err(e),
+        };
         let _ = tx.send(WorkerResult {
             gen: job.gen,
             coord: job.coord,
             source_id: job.source.id,
-            data: result,
+            data: decoded,
         });
     }
 }
@@ -214,13 +231,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Build a 4×4 valid PNG so the worker's `image::load_from_memory` call
+    /// can actually decode it. Tests that exercise the decoded-output
+    /// contract must use this rather than arbitrary bytes.
+    fn minimal_png_4x4() -> Vec<u8> {
+        use image::ImageEncoder;
+        let mut img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 255]));
+        img.put_pixel(1, 2, image::Rgba([200, 100, 50, 255]));
+        let mut out = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(img.as_raw(), 4, 4, image::ExtendedColorType::Rgba8)
+            .expect("encode minimal png");
+        out
+    }
+
     #[test]
     fn test_pool_serves_cached_tile_without_network() {
-        // If the tile is already in the disk cache, the worker must return
-        // it from cache without any network call (we can't verify "no
-        // network" directly here, but we CAN verify that a gen-current job
-        // for a cached coord returns Ok(data) even with an invalid URL
-        // source — if the cache lookup short-circuits, no network call.
+        // Phase H: the worker fetches cached bytes AND decodes on its own
+        // thread. We seed the disk cache with a valid 4×4 PNG and assert
+        // the pool hands back an `RgbaImage` of the right dimensions,
+        // proving cache lookup + decode both happened off the render thread.
         let tmp = unique_tmp_dir("cached");
         let cache = Arc::new(TileCache::new(CacheConfig {
             cache_dir: tmp.clone(),
@@ -228,7 +258,8 @@ mod tests {
             max_age: None,
         }));
         let coord = TileCoord { z: 3, x: 1, y: 1 };
-        cache.put("osm", &coord, "png", b"cached-bytes");
+        let png = minimal_png_4x4();
+        cache.put("osm", &coord, "png", &png);
 
         let pool = WorkerPool::with_threads(Arc::clone(&cache), 1);
         let source = builtin_tile_sources()
@@ -250,7 +281,10 @@ mod tests {
         }
         assert_eq!(results.len(), 1);
         let r = &results[0];
-        assert_eq!(r.data.as_deref().ok(), Some(&b"cached-bytes"[..]));
+        let img = r.data.as_ref().expect("cached tile must decode");
+        assert_eq!(img.dimensions(), (4, 4), "decoded image should match seed");
+        let px = img.get_pixel(1, 2);
+        assert_eq!(px.0, [200, 100, 50, 255], "decoded pixel preserved");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

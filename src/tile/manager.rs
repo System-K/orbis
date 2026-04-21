@@ -107,14 +107,17 @@ pub struct TileMetrics {
     pub gen: u64,
 }
 
-/// Maximum number of tiles decoded + composited from the disk cache in a
-/// single frame.  Image decoding (JPEG/PNG via the `image` crate) is the
-/// dominant per-tile cost on the render thread — roughly 1-5 ms each.
-/// Capping it at 4 per frame keeps the frame budget under 20 ms even on
-/// a zoom change (which invalidates the whole composited set and forces
-/// all visible tiles to be re-decoded).  Tiles beyond the cap are
-/// deferred to subsequent frames — visually, tiles "pop in" over 3-4
-/// frames instead of freezing for 60-200 ms.
+/// Maximum number of tiles blitted into the compositor buffer in a single
+/// frame.
+///
+/// Phase H moved image decoding off the render thread — workers now hand
+/// back pre-decoded `RgbaImage`s. The remaining per-tile render-thread cost
+/// is just the compositor's row-wise blit (~0.2 ms/tile after Phase E).
+/// The cap still matters on a fresh zoom change where 20+ tiles arrive
+/// within a few frames: blitting them all in one frame would push past
+/// the 16.7 ms budget. Tiles beyond the cap wait one frame — workers keep
+/// the decoded result in the cache's on-disk form so re-fetch next frame
+/// is another cache hit + decode, not a network round-trip.
 const MAX_COMPOSITES_PER_FRAME: usize = 4;
 
 /// Single owner of the tile subsystem.
@@ -226,38 +229,18 @@ impl TileManager {
         let visible = TileCoord::tiles_in_view(lat_n, lat_s, lon_w, lon_e, zoom);
         self.metrics.visible_tiles = visible.len() as u32;
 
-        // Missing tiles: cache-hit -> composite sync; miss -> enqueue.
+        // Phase H: always enqueue — the render thread never hits the disk
+        // cache itself. The worker's `fetch_tile` checks the disk cache
+        // first, so a cached tile is just a disk-read + decode on the
+        // worker thread (~1–3 ms) rather than on the render thread
+        // (~1–5 ms) plus PCIe bandwidth for free.
         //
-        // Compositing involves JPEG/PNG decoding (1-5 ms each) on the
-        // render thread, so we cap the number of composites per frame
-        // to keep the frame budget manageable. Tiles beyond the cap
-        // will be picked up on subsequent frames.
-        //
-        // Enqueueing downloads is cheap (just a channel send), so we
-        // always enqueue cache misses regardless of the composite cap.
-        // This ensures network fetches start immediately during a pan
-        // instead of being delayed by multiple frames while cached
-        // tiles drain the composite budget.
-        let ext = source.extension();
+        // Enqueueing is a channel send + HashSet insert — cheap enough
+        // to do for every visible tile every frame; `in_flight` dedups
+        // so repeat frames don't spam the channel.
         let current_gen = self.pool.current_gen();
-        let mut composites_this_frame: usize = 0;
         for coord in &visible {
             if self.compositor.has_tile(coord) { continue; }
-            // Try cache first (only if we have budget — avoids
-            // filesystem I/O when we'd just throw the data away).
-            if composites_this_frame < MAX_COMPOSITES_PER_FRAME {
-                if let Some(data) = self.cache.get(&source.id, coord, ext) {
-                    self.compositor.composite_tile(coord, &data);
-                    composites_this_frame += 1;
-                    self.metrics.cache_hits = self.metrics.cache_hits.wrapping_add(1);
-                    continue;
-                }
-            }
-            // Cache miss (or over budget) — enqueue for download if not
-            // already in flight. If the tile is actually cached but we
-            // skipped it due to the cap, the worker's `fetch_tile` will
-            // hit the disk cache and return immediately; the result
-            // composites next frame.
             let key = (source.id.clone(), *coord);
             if self.in_flight.contains(&key) { continue; }
             self.in_flight.insert(key);
@@ -270,26 +253,30 @@ impl TileManager {
             });
         }
 
-        // Drain results, filter stale. Worker results also count against
-        // the per-frame composite cap — downloaded tiles arrive decoded
-        // as raw bytes (still need image::load_from_memory).
+        // Drain worker results. Each result carries an already-decoded
+        // `RgbaImage`, so the render thread only runs the compositor's
+        // row-wise blit — no image::load_from_memory, no PNG/JPEG decode.
+        //
+        // The composite cap still bounds blit work per frame. A worker
+        // result that can't be blitted this frame is dropped — the tile
+        // stays in the disk cache (put by `fetch_tile`), so next frame
+        // will re-enqueue and the worker will serve it from cache.
+        let mut composites_this_frame: usize = 0;
         let results = self.pool.poll();
         let live_gen = self.pool.current_gen();
         for r in results {
             self.in_flight.remove(&(r.source_id.clone(), r.coord));
             if r.gen < live_gen { continue; }
             if r.source_id != self.prev_source { continue; }
-            if let Ok(data) = r.data {
+            if let Ok(img) = r.data {
                 if composites_this_frame < MAX_COMPOSITES_PER_FRAME {
-                    self.compositor.composite_tile(&r.coord, &data);
+                    self.compositor.composite_decoded(&r.coord, &img);
                     composites_this_frame += 1;
-                } else {
-                    // Over budget — cache the data so it's a hit next
-                    // frame instead of another network fetch.
-                    self.cache.put(&r.source_id, &r.coord, ext, &data);
-                    // Put it back as "not in flight" so the cache-hit
-                    // path picks it up next frame.
+                    self.metrics.cache_hits = self.metrics.cache_hits.wrapping_add(1);
                 }
+                // Over budget: decoded image is dropped here; the disk
+                // cache still has the encoded bytes thanks to fetch_tile's
+                // cache.put, so next frame it's a fast re-fetch.
             }
         }
 

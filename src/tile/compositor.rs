@@ -96,16 +96,17 @@ impl TileCompositor {
         self.composited.contains(coord)
     }
 
-    /// Composites a tile image into the equirectangular buffer.
+    /// Composites a raw-bytes tile image into the equirectangular buffer.
     ///
-    /// Decodes the image (JPEG/PNG), computes its UV bounds, and blits
-    /// the pixels into the correct position in the buffer.
+    /// Decodes the image (JPEG/PNG), then delegates to `composite_decoded`.
+    /// Retained so tests and any remaining `&[u8]` callers still work —
+    /// the primary hot path (worker results) calls `composite_decoded`
+    /// directly with the image already decoded on a worker thread (Phase H).
+    #[allow(dead_code)] // used by compositor tests + kept as a &[u8] entry point
     pub fn composite_tile(&mut self, coord: &TileCoord, image_data: &[u8]) -> bool {
         if self.composited.contains(coord) {
-            return false; // already composited
+            return false;
         }
-
-        // Decode image
         let img = match image::load_from_memory(image_data) {
             Ok(img) => img.to_rgba8(),
             Err(e) => {
@@ -113,6 +114,22 @@ impl TileCompositor {
                 return false;
             }
         };
+        self.composite_decoded(coord, &img)
+    }
+
+    /// Composites a pre-decoded RGBA tile image into the equirectangular
+    /// buffer. This is the hot path — workers decode on their threads and
+    /// hand the ready `RgbaImage` to the manager, which calls here. Zero
+    /// image-decode work on the render thread.
+    pub fn composite_decoded(
+        &mut self,
+        coord: &TileCoord,
+        img: &image::RgbaImage,
+    ) -> bool {
+        if self.composited.contains(coord) {
+            return false; // already composited
+        }
+
         let (tw, th) = img.dimensions();
 
         // Compute tile bounds in geographic coordinates
@@ -402,6 +419,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_composite_decoded_matches_composite_tile() {
+        // Phase H: `composite_tile(&[u8])` and `composite_decoded(&RgbaImage)`
+        // must produce identical pixels for the same source image. This
+        // guards against the wrapper divergence as the hot path switches
+        // to the decoded variant.
+        let png = four_corner_png();
+        let coord = TileCoord { z: 1, x: 0, y: 0 };
+
+        let mut via_bytes = TileCompositor::new(128, 64);
+        via_bytes.reset(1);
+        via_bytes.mark_clean();
+        assert!(via_bytes.composite_tile(&coord, &png));
+
+        let mut via_decoded = TileCompositor::new(128, 64);
+        via_decoded.reset(1);
+        via_decoded.mark_clean();
+        let img = image::load_from_memory(&png).expect("decode png").to_rgba8();
+        assert!(via_decoded.composite_decoded(&coord, &img));
+
+        assert_eq!(
+            via_bytes.buffer(), via_decoded.buffer(),
+            "composite_decoded must produce identical pixels to composite_tile",
+        );
     }
 
     #[test]

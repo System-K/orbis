@@ -120,13 +120,16 @@ impl TileCache {
     ///
     /// Returns None if the tile is not cached or has expired.
     /// Updates the file's access time on hit (for LRU).
+    ///
+    /// Phase K: the miss path used to be `path.exists()` + `fs::read()` —
+    /// two syscalls. `fs::read` on a missing path returns `io::Error`
+    /// (`NotFound`) anyway, so the `exists()` check was pure overhead.
+    /// We now read unconditionally and treat any I/O error as a miss.
     pub fn get(&self, source_id: &str, coord: &TileCoord, ext: &str) -> Option<Vec<u8>> {
         let path = self.tile_path(source_id, coord, ext);
-        if !path.exists() {
-            return None;
-        }
 
-        // Check age — `None` disables expiry entirely
+        // Age check — only meaningful for an existing file; wrapped around
+        // the read so we do just one `metadata` call total on the hot path.
         let max_age = self.limits.read().unwrap().max_age;
         if let Some(max_age) = max_age {
             if let Ok(metadata) = path.metadata() {
@@ -144,12 +147,14 @@ impl TileCache {
                     }
                 }
             }
+            // `metadata.err()` on a missing file is the same "miss" outcome
+            // we'd get from `fs::read` below, so fall through either way.
         }
 
-        // Read and "touch" (update mtime for LRU ordering)
+        // Read and "touch" (update mtime for LRU ordering). Missing-file
+        // error = cache miss; no need for a separate `exists()` probe.
         match std::fs::read(&path) {
             Ok(data) => {
-                // Touch the file to update mtime (for LRU ordering)
                 if let Ok(file) = std::fs::File::open(&path) {
                     let times = std::fs::FileTimes::new()
                         .set_modified(SystemTime::now());
