@@ -7,6 +7,7 @@
 // =============================================================================
 
 use crate::{GpuState, QUAD_HALF_WIDTH, ViewMode, gui, label, planets};
+use crate::satellite::GroundTrackPoint;
 
 impl GpuState {
     pub(crate) fn project_screen_overlays(&mut self, sat_utc: chrono::DateTime<chrono::Utc>) {
@@ -104,15 +105,36 @@ impl GpuState {
             });
         }
 
-        // Project ground tracks (only enabled satellites)
+        // Project ground tracks (only enabled satellites).
+        //
+        // Phase G: `compute_ground_track_cached` memoizes the sub-
+        // satellite path per 30-second sim-time bucket. A cold bucket
+        // costs the same as the old per-frame `compute_ground_track`
+        // (~0.3 ms × 90 samples = ~25 ms with 8 sats); every frame
+        // inside the same bucket is a hashmap lookup. Projection to
+        // screen stays per-frame — that's cheap matrix math.
         self.gui_state.satellite_tracks.clear();
-        for sat in self.satellite_tracker.states() {
-            if !self.gui_state.enabled_satellites.contains(&sat.norad_id) {
-                continue;
-            }
-            let track_pts = self.satellite_tracker.compute_ground_track(
-                sat.norad_id, &sat_utc, 90.0, 90.0, 2.0,
-            );
+        // Snapshot the enabled NORAD ids so we can borrow the tracker
+        // mutably for `compute_ground_track_cached` without tripping
+        // the borrow checker on `states()`.
+        let enabled_sats: Vec<u32> = self
+            .satellite_tracker
+            .states()
+            .iter()
+            .filter(|s| self.gui_state.enabled_satellites.contains(&s.norad_id))
+            .map(|s| s.norad_id)
+            .collect();
+        for norad_id in &enabled_sats {
+            let norad_id = *norad_id;
+            // Clone out of the cache because the projection loop below
+            // also reads `self.gui_state`, and holding the `&mut self`
+            // borrow through `compute_ground_track_cached` past the
+            // loop body would conflict. The clone is a few kB and only
+            // a few of them exist per frame — negligible.
+            let track_pts: Vec<GroundTrackPoint> = self
+                .satellite_tracker
+                .compute_ground_track_cached(norad_id, &sat_utc, 90.0, 90.0, 2.0)
+                .to_vec();
             let mut past_segments: Vec<Vec<egui::Pos2>> = Vec::new();
             let mut future_segments: Vec<Vec<egui::Pos2>> = Vec::new();
             let mut cur_past: Vec<egui::Pos2> = Vec::new();
@@ -186,7 +208,7 @@ impl GpuState {
             if cur_future.len() >= 2 { future_segments.push(cur_future); }
 
             self.gui_state.satellite_tracks.push(gui::SatelliteTrack {
-                norad_id: sat.norad_id,
+                norad_id,
                 past_segments, future_segments,
             });
         }
