@@ -18,9 +18,15 @@ use super::fetcher::DEFAULT_FETCH_TIMEOUT;
 use super::{fetch_tile, TileCache, TileCoord, TileSource};
 
 /// A tile download request tagged with a generation counter.
+///
+/// `source` is an `Arc<TileSource>` so enqueueing is a cheap atomic ref-bump
+/// instead of ~8 heap allocations per tile (id/name/url_template/attribution
+/// strings + the subdomain vec). At close zoom the manager may fan out tens
+/// of thousands of tiles per frame; cloning the full struct used to be the
+/// dominant render-thread cost at z ≥ 11.
 pub struct Job {
     pub gen: u64,
-    pub source: TileSource,
+    pub source: Arc<TileSource>,
     pub coord: TileCoord,
     pub date: Option<String>,
 }
@@ -163,10 +169,14 @@ fn worker_loop(
             },
             Err(e) => Err(e),
         };
+        // Clone only the source_id — WorkerResult crosses the channel back
+        // to the manager, which needs to match it against the current source
+        // without holding on to the full Arc<TileSource>.
+        let source_id = job.source.id.clone();
         let _ = tx.send(WorkerResult {
             gen: job.gen,
             coord: job.coord,
-            source_id: job.source.id,
+            source_id,
             data: decoded,
         });
     }
@@ -203,10 +213,12 @@ mod tests {
         let new_gen = pool.bump_generation();
         assert_eq!(new_gen, 1);
 
-        let source = builtin_tile_sources()
-            .into_iter()
-            .find(|s| s.id == "osm")
-            .expect("osm source must exist");
+        let source = Arc::new(
+            builtin_tile_sources()
+                .into_iter()
+                .find(|s| s.id == "osm")
+                .expect("osm source must exist"),
+        );
         pool.enqueue(Job {
             gen: 0, // stale
             source,
@@ -262,10 +274,12 @@ mod tests {
         cache.put("osm", &coord, "png", &png);
 
         let pool = WorkerPool::with_threads(Arc::clone(&cache), 1);
-        let source = builtin_tile_sources()
-            .into_iter()
-            .find(|s| s.id == "osm")
-            .unwrap();
+        let source = Arc::new(
+            builtin_tile_sources()
+                .into_iter()
+                .find(|s| s.id == "osm")
+                .unwrap(),
+        );
         pool.enqueue(Job {
             gen: pool.current_gen(),
             source,

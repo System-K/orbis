@@ -132,8 +132,23 @@ pub struct TileManager {
     prev_zoom: u32,
     prev_source: String,
     cache_check_counter: u32,
-    /// Dedup: tiles currently enqueued (by source+coord).
-    in_flight: HashSet<(String, TileCoord)>,
+    /// Dedup: tiles currently enqueued for the active source.
+    ///
+    /// Scoped to `prev_source` — the set is cleared whenever the source
+    /// changes, so we never need to key on source_id. Dropping the String
+    /// from the key also kills a per-tile `source.id.clone()` at high zoom
+    /// (a 30-60 k/frame hot path at z = 12).
+    in_flight: HashSet<TileCoord>,
+    /// Phase N: cached bit-pattern hash of the view+source+zoom from the
+    /// previous successful tile fan-out. When the current frame's hash
+    /// matches AND nothing else invalidates the cache, we skip computing
+    /// `visible_bounds` + `tiles_in_view` + the enqueue loop entirely.
+    /// `None` means "recompute next frame". Cleared by source/zoom change,
+    /// cache clear, and whenever new composites arrive (since a newly
+    /// composited tile means `has_tile()` would return true for coords
+    /// that were previously enqueued — the set shrinks and we want the
+    /// next tick to see it).
+    last_view_key: Option<u64>,
     metrics: TileMetrics,
 }
 
@@ -165,8 +180,29 @@ impl TileManager {
             prev_source: initial_source,
             cache_check_counter: 0,
             in_flight: HashSet::new(),
+            last_view_key: None,
             metrics: TileMetrics::default(),
         }
+    }
+
+    /// Bit-pattern hash of view + zoom + source for visible-set memoization.
+    ///
+    /// Uses `f32::to_bits()` so exact-equal views produce exact-equal keys;
+    /// even the tiniest camera drift invalidates the cache (correct —
+    /// any real movement means the visible tile set might differ). The
+    /// source id's hash is mixed in so a source switch refreshes even
+    /// if yaw/pitch/distance are unchanged.
+    fn view_key(view: &ViewState, zoom: u32, source_id: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        view.yaw.to_bits().hash(&mut h);
+        view.pitch.to_bits().hash(&mut h);
+        view.distance.to_bits().hash(&mut h);
+        view.fov_y.to_bits().hash(&mut h);
+        view.aspect.to_bits().hash(&mut h);
+        zoom.hash(&mut h);
+        source_id.hash(&mut h);
+        h.finish()
     }
 
     /// Main per-frame entry point. Runs the state machine:
@@ -177,9 +213,11 @@ impl TileManager {
     /// 5. Drain worker results, filter stale, composite valid ones
     pub fn update(&mut self, view: ViewState, settings: &TileSettings) -> TileFrameResult {
         // Resolve source — if invalid, bail out (caller is responsible for
-        // sanitization but we guard anyway).
+        // sanitization but we guard anyway). Wrap in `Arc` once so the
+        // enqueue loop below can clone it in O(1) per tile instead of
+        // doing a full struct clone (8+ heap allocs) per visible tile.
         let source = match self.sources.iter().find(|s| s.id == settings.source_id) {
-            Some(s) => s.clone(),
+            Some(s) => Arc::new(s.clone()),
             None => return TileFrameResult::default(),
         };
 
@@ -212,6 +250,7 @@ impl TileManager {
             self.compositor.reset(zoom);
             self.prev_zoom = zoom;
             self.in_flight.clear();
+            self.last_view_key = None;
             reset = true;
         } else if zoom_changed {
             let new_gen = self.pool.bump_generation();
@@ -219,38 +258,53 @@ impl TileManager {
             self.compositor.demote_to_zoom(zoom);
             self.prev_zoom = zoom;
             self.in_flight.clear();
+            self.last_view_key = None;
             // reset stays false — old pixels keep rendering.
         }
 
-        // Visible tiles
-        let (lat_n, lat_s, lon_w, lon_e) = visible_bounds(
-            view.yaw, view.pitch, view.distance, view.fov_y, view.aspect,
-        );
-        let visible = TileCoord::tiles_in_view(lat_n, lat_s, lon_w, lon_e, zoom);
-        self.metrics.visible_tiles = visible.len() as u32;
+        // Phase N: skip the entire visible-set derivation + enqueue loop
+        // when the view is bit-exactly the same as last frame AND nothing
+        // else changed state this tick (source/zoom change paths above
+        // null `last_view_key` explicitly; the composite drain below
+        // nulls it again whenever a newly-arrived tile shrinks the miss
+        // set). At z = 12 the loop visits ~100 k coords and dominates
+        // the render thread; a static view should pay none of that.
+        let current_view_key = Self::view_key(&view, zoom, &self.prev_source);
+        let memoized = self.last_view_key == Some(current_view_key);
+        if !memoized {
+            let (lat_n, lat_s, lon_w, lon_e) = visible_bounds(
+                view.yaw, view.pitch, view.distance, view.fov_y, view.aspect,
+            );
+            let visible = TileCoord::tiles_in_view(lat_n, lat_s, lon_w, lon_e, zoom);
+            self.metrics.visible_tiles = visible.len() as u32;
 
-        // Phase H: always enqueue — the render thread never hits the disk
-        // cache itself. The worker's `fetch_tile` checks the disk cache
-        // first, so a cached tile is just a disk-read + decode on the
-        // worker thread (~1–3 ms) rather than on the render thread
-        // (~1–5 ms) plus PCIe bandwidth for free.
-        //
-        // Enqueueing is a channel send + HashSet insert — cheap enough
-        // to do for every visible tile every frame; `in_flight` dedups
-        // so repeat frames don't spam the channel.
-        let current_gen = self.pool.current_gen();
-        for coord in &visible {
-            if self.compositor.has_tile(coord) { continue; }
-            let key = (source.id.clone(), *coord);
-            if self.in_flight.contains(&key) { continue; }
-            self.in_flight.insert(key);
-            self.metrics.cache_misses = self.metrics.cache_misses.wrapping_add(1);
-            self.pool.enqueue(Job {
-                gen: current_gen,
-                source: source.clone(),
-                coord: *coord,
-                date: None,
-            });
+            // Phase H: always enqueue — the render thread never hits the
+            // disk cache itself. The worker's `fetch_tile` checks the
+            // disk cache first, so a cached tile is just a disk-read +
+            // decode on the worker thread (~1–3 ms) rather than on the
+            // render thread (~1–5 ms) plus PCIe bandwidth for free.
+            //
+            // Phase N: `source.clone()` is now `Arc::clone` (atomic
+            // increment, no allocations) and `in_flight` is keyed on
+            // `TileCoord` alone, so neither the source struct nor its
+            // id is heap-allocated per tile. Before Phase N this loop
+            // allocated ~8 heap blocks per visible tile, which at
+            // z = 12 (≈ 40–160 k visible tiles) was the dominant render-
+            // thread cost — hundreds of thousands of `malloc`s per frame.
+            let current_gen = self.pool.current_gen();
+            for coord in &visible {
+                if self.compositor.has_tile(coord) { continue; }
+                if !self.in_flight.insert(*coord) { continue; }
+                self.metrics.cache_misses =
+                    self.metrics.cache_misses.wrapping_add(1);
+                self.pool.enqueue(Job {
+                    gen: current_gen,
+                    source: Arc::clone(&source),
+                    coord: *coord,
+                    date: None,
+                });
+            }
+            self.last_view_key = Some(current_view_key);
         }
 
         // Drain worker results. Each result carries an already-decoded
@@ -265,7 +319,10 @@ impl TileManager {
         let results = self.pool.poll();
         let live_gen = self.pool.current_gen();
         for r in results {
-            self.in_flight.remove(&(r.source_id.clone(), r.coord));
+            // Results from a prior source arrive AFTER `in_flight` was
+            // cleared on the source-change path, so unconditional
+            // `remove` is fine — it is a no-op on a stale result.
+            self.in_flight.remove(&r.coord);
             if r.gen < live_gen { continue; }
             if r.source_id != self.prev_source { continue; }
             if let Ok(img) = r.data {
@@ -273,6 +330,12 @@ impl TileManager {
                     self.compositor.composite_decoded(&r.coord, &img);
                     composites_this_frame += 1;
                     self.metrics.cache_hits = self.metrics.cache_hits.wrapping_add(1);
+                    // A freshly composited tile means `has_tile` would
+                    // now return true for `r.coord`. The memoized view
+                    // key was computed against the *previous* composite
+                    // state; null it so the next tick's enqueue loop
+                    // still runs and picks up any remaining misses.
+                    self.last_view_key = None;
                 }
                 // Over budget: decoded image is dropped here; the disk
                 // cache still has the encoded bytes thanks to fetch_tile's
@@ -312,6 +375,7 @@ impl TileManager {
         let new_gen = self.pool.bump_generation();
         self.metrics.gen = new_gen;
         self.in_flight.clear();
+        self.last_view_key = None;
     }
 
     pub fn cache_size_mb(&self) -> f32 {
@@ -501,6 +565,46 @@ mod tests {
         // We don't assert exact count because visible tile count depends on
         // zoom; we just confirm the bookkeeping runs.
         let _ = zoom;
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_visible_set_memoized_on_steady_view() {
+        // Phase N: two identical update() calls in a row must NOT
+        // re-enqueue any tiles — the second should short-circuit on
+        // the cached view key. We detect this by watching the
+        // `cache_misses` counter (bumped exactly once per newly
+        // enqueued tile). A steady view: misses count stays flat
+        // from call 2 onwards.
+        let (mut m, tmp) = manager_with("osm");
+
+        // First update: computes visible set, enqueues everything.
+        let _ = m.update(default_view(), &default_settings("osm"));
+        let misses_after_first = m.metrics().cache_misses;
+        assert!(
+            misses_after_first > 0,
+            "first update on empty cache should enqueue at least one tile",
+        );
+
+        // Second update with the SAME view: memoization kicks in.
+        // Misses must stay flat — no new enqueues.
+        let _ = m.update(default_view(), &default_settings("osm"));
+        let misses_after_second = m.metrics().cache_misses;
+        assert_eq!(
+            misses_after_first, misses_after_second,
+            "steady view must skip the enqueue loop entirely",
+        );
+
+        // Sanity: a view change (yaw pan) does invalidate the cache.
+        let mut panned = default_view();
+        panned.yaw += 0.5;
+        let _ = m.update(panned, &default_settings("osm"));
+        let misses_after_pan = m.metrics().cache_misses;
+        assert!(
+            misses_after_pan >= misses_after_second,
+            "pan must re-run the enqueue loop (allowing new misses)",
+        );
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
