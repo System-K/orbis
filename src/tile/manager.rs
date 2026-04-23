@@ -25,7 +25,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{
     builtin_tile_sources, level_for, visible_bounds,
@@ -120,6 +120,21 @@ pub struct TileMetrics {
 /// is another cache hit + decode, not a network round-trip.
 const MAX_COMPOSITES_PER_FRAME: usize = 4;
 
+/// Phase O: how long the camera view must be bit-exactly the same before
+/// a dwell-triggered fast-track fires.
+///
+/// When the user pans rapidly at high zoom, the FIFO worker queue fills
+/// with jobs for tiles along the pan trajectory. When the pan ends, those
+/// tiles are no longer visible but still ahead of the wanted ones in the
+/// queue — the user sees a long catch-up delay. A dwell signal says
+/// "camera has stopped" and cancels the stale queue + re-enqueues only
+/// what's visible now, bumping the wanted tiles to the front.
+///
+/// 500 ms is long enough that a brief mid-pan pause doesn't trip the
+/// (cheap but not free) generation bump, and short enough that a user
+/// who deliberately stops feels the speed-up almost immediately.
+const DWELL_THRESHOLD: Duration = Duration::from_millis(500);
+
 /// Single owner of the tile subsystem.
 pub struct TileManager {
     cache_dir: PathBuf,
@@ -149,6 +164,22 @@ pub struct TileManager {
     /// that were previously enqueued — the set shrinks and we want the
     /// next tick to see it).
     last_view_key: Option<u64>,
+    /// Phase O: the view_key observed last frame regardless of memoization
+    /// state. Distinct from `last_view_key` because the memoization cache
+    /// gets nulled mid-drain on composite arrivals — which would corrupt
+    /// dwell timing if we reused it. This field tracks "what the view
+    /// *actually* was last frame" so the dwell detector can tell pan from
+    /// still.
+    last_seen_view_key: Option<u64>,
+    /// Phase O: `Some(Instant)` at the moment `last_seen_view_key` most
+    /// recently changed. Dwell duration is `elapsed()` off this. `None`
+    /// only at startup and on cache-clear; transitions to `Some` on the
+    /// first `update()` call and every subsequent view_key change.
+    view_stable_since: Option<Instant>,
+    /// Phase O: latched `true` after the dwell fast-track fires for the
+    /// current stable view. Prevents re-firing every frame while the
+    /// view stays still. Reset to `false` on any view_key change.
+    prioritized: bool,
     metrics: TileMetrics,
 }
 
@@ -181,6 +212,9 @@ impl TileManager {
             cache_check_counter: 0,
             in_flight: HashSet::new(),
             last_view_key: None,
+            last_seen_view_key: None,
+            view_stable_since: None,
+            prioritized: false,
             metrics: TileMetrics::default(),
         }
     }
@@ -270,6 +304,46 @@ impl TileManager {
         // set). At z = 12 the loop visits ~100 k coords and dominates
         // the render thread; a static view should pay none of that.
         let current_view_key = Self::view_key(&view, zoom, &self.prev_source);
+
+        // Phase O: track view stability for the dwell-triggered fast-track.
+        // `view_changed` is the canonical signal (not `last_view_key` —
+        // that one gets nulled mid-drain on composite arrivals and is
+        // unsuitable for timing).
+        let view_changed = self.last_seen_view_key != Some(current_view_key);
+        if view_changed {
+            self.view_stable_since = Some(Instant::now());
+            self.prioritized = false;
+        }
+        self.last_seen_view_key = Some(current_view_key);
+
+        // Phase O: if the camera has been still long enough AND we still
+        // have pending work in the queue, cancel it and re-enqueue from
+        // scratch. Workers obey `current_gen` via WorkerPool::bump_generation,
+        // so old jobs become Err("stale") no-ops on the worker side without
+        // any cross-thread cancellation protocol. `prioritized` latches so
+        // we do this at most once per stable view.
+        //
+        // Per-frame cost when NOT firing: one `Instant::now()` + one
+        // Option compare + a bool check. Firing itself bumps gen and
+        // leaves the real work (re-enqueue) to the existing loop below.
+        if !self.prioritized
+            && !self.in_flight.is_empty()
+            && self
+                .view_stable_since
+                .map(|t| t.elapsed() >= DWELL_THRESHOLD)
+                .unwrap_or(false)
+        {
+            log::debug!(
+                "tile: dwell fast-track (cancel + re-enqueue {} pending tiles)",
+                self.in_flight.len(),
+            );
+            let new_gen = self.pool.bump_generation();
+            self.metrics.gen = new_gen;
+            self.in_flight.clear();
+            self.last_view_key = None;
+            self.prioritized = true;
+        }
+
         let memoized = self.last_view_key == Some(current_view_key);
         if !memoized {
             let (lat_n, lat_s, lon_w, lon_e) = visible_bounds(
@@ -319,12 +393,18 @@ impl TileManager {
         let results = self.pool.poll();
         let live_gen = self.pool.current_gen();
         for r in results {
-            // Results from a prior source arrive AFTER `in_flight` was
-            // cleared on the source-change path, so unconditional
-            // `remove` is fine — it is a no-op on a stale result.
-            self.in_flight.remove(&r.coord);
+            // Stale-generation result: do NOT touch in_flight. Phase O's
+            // dwell fast-track bumps generation at the SAME zoom/source,
+            // which means a coord's key is identical before and after the
+            // bump — an unconditional `remove` here would nuke an entry
+            // we just re-enqueued under the new gen, causing the next
+            // frame to double-enqueue. For source/zoom changes the
+            // `r.source_id != self.prev_source` and coord-zoom mismatches
+            // already made `remove` effectively a no-op, so this tighter
+            // gate doesn't regress those paths.
             if r.gen < live_gen { continue; }
             if r.source_id != self.prev_source { continue; }
+            self.in_flight.remove(&r.coord);
             if let Ok(img) = r.data {
                 if composites_this_frame < MAX_COMPOSITES_PER_FRAME {
                     self.compositor.composite_decoded(&r.coord, &img);
@@ -376,6 +456,12 @@ impl TileManager {
         self.metrics.gen = new_gen;
         self.in_flight.clear();
         self.last_view_key = None;
+        // Phase O: after a cache wipe the dwell timer should restart from
+        // the user's next update() so we don't fast-track immediately on
+        // an empty in_flight (or worse, fire twice in quick succession).
+        self.last_seen_view_key = None;
+        self.view_stable_since = None;
+        self.prioritized = false;
     }
 
     pub fn cache_size_mb(&self) -> f32 {
@@ -436,6 +522,19 @@ impl TileManager {
             width: rect_w,
             height: rect_h,
         })
+    }
+
+    /// Test helper: shift `view_stable_since` into the past so the next
+    /// `update()` call sees the dwell threshold as exceeded. Tests that
+    /// need the Phase O fast-track to fire call this between updates
+    /// instead of actually sleeping 500 ms+.
+    #[cfg(test)]
+    pub(crate) fn force_dwell_elapsed_for_test(&mut self) {
+        self.view_stable_since = Some(
+            Instant::now()
+                .checked_sub(DWELL_THRESHOLD + Duration::from_millis(100))
+                .unwrap_or_else(Instant::now),
+        );
     }
 }
 
@@ -603,6 +702,92 @@ mod tests {
         assert!(
             misses_after_pan >= misses_after_second,
             "pan must re-run the enqueue loop (allowing new misses)",
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_dwell_fires_fast_track_after_stable_view() {
+        // Phase O: a static view with pending work should trigger a
+        // generation bump + re-enqueue once the dwell threshold passes.
+        let (mut m, tmp) = manager_with("osm");
+        let _ = m.update(default_view(), &default_settings("osm"));
+        assert!(
+            m.metrics().in_flight > 0,
+            "precondition: first update on empty cache must enqueue tiles",
+        );
+        let gen_before = m.metrics().gen;
+
+        m.force_dwell_elapsed_for_test();
+        let _ = m.update(default_view(), &default_settings("osm"));
+
+        let gen_after = m.metrics().gen;
+        assert!(
+            gen_after > gen_before,
+            "dwell fast-track should bump generation (before={}, after={})",
+            gen_before, gen_after,
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_dwell_does_not_fire_on_moving_view() {
+        // Phase O: a camera that moves every frame must never trigger a
+        // fast-track — the dwell timer resets each time view_key changes,
+        // and the post-change `elapsed` is effectively 0.
+        let (mut m, tmp) = manager_with("osm");
+        let mut view = default_view();
+        let _ = m.update(view, &default_settings("osm"));
+        let gen_after_init = m.metrics().gen;
+
+        for _ in 0..5 {
+            view.yaw += 0.1; // always a new view_key
+            m.force_dwell_elapsed_for_test();
+            let _ = m.update(view, &default_settings("osm"));
+            assert_eq!(
+                m.metrics().gen,
+                gen_after_init,
+                "moving view must not fire dwell fast-track",
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_dwell_fires_only_once_per_stable_view() {
+        // Phase O: once `prioritized` latches, subsequent dwell-expired
+        // updates on the same view must NOT re-bump the generation.
+        // A view change re-arms the latch.
+        let (mut m, tmp) = manager_with("osm");
+        let _ = m.update(default_view(), &default_settings("osm"));
+
+        m.force_dwell_elapsed_for_test();
+        let _ = m.update(default_view(), &default_settings("osm"));
+        let gen_after_first_fire = m.metrics().gen;
+
+        m.force_dwell_elapsed_for_test();
+        let _ = m.update(default_view(), &default_settings("osm"));
+        assert_eq!(
+            m.metrics().gen,
+            gen_after_first_fire,
+            "second dwell-elapsed tick on same view must not re-fire",
+        );
+
+        // Pan: new view_key should re-arm the latch and allow the next
+        // dwell-elapsed tick to fire again.
+        let mut panned = default_view();
+        panned.yaw += 0.5;
+        let _ = m.update(panned, &default_settings("osm"));
+        m.force_dwell_elapsed_for_test();
+        let _ = m.update(panned, &default_settings("osm"));
+        assert!(
+            m.metrics().gen > gen_after_first_fire,
+            "view change + dwell elapsed must re-fire (before={}, now={})",
+            gen_after_first_fire,
+            m.metrics().gen,
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
