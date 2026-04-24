@@ -6,6 +6,11 @@
 // Unlike GIBS (which is NASA-specific), these providers support any
 // OGC-compliant WMS server: DWD, Terrestris/OSM, Copernicus, etc.
 //
+// Module layout:
+// - `crs`        — supported CRSes and the lat/lon → pixel forward transform
+// - `reproject`  — generic source-CRS → equirectangular resampler
+// - (this file)  — static layer list, WmsProvider, URL building, fetch/cache
+//
 // Key differences from GIBS:
 // - Configurable base URL per provider
 // - Optional TIME parameter (basemaps don't need it)
@@ -13,12 +18,16 @@
 // - Each service has its own attribution requirements
 // =============================================================================
 
+pub mod crs;
+pub mod reproject;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
 
 use crate::provider::{LayerImage, LayerProvider, ProviderCategory, ProviderInfo};
+use crs::Crs;
 
 /// Default resolution for WMS downloads (same as GIBS).
 const DEFAULT_WIDTH: u32 = 2048;
@@ -482,75 +491,13 @@ pub fn reproject_mercator_pub(src: LayerImage) -> Result<LayerImage, String> {
 }
 
 fn reproject_mercator_to_equirect(src: LayerImage) -> Result<LayerImage, String> {
-    let src_w = src.width as usize;
-    let src_h = src.height as usize;
-    let out_w = DEFAULT_WIDTH as usize;
-    let out_h = DEFAULT_HEIGHT as usize;
-
-    let mut out_rgba = vec![0u8; out_w * out_h * 4];
-
-    // Maximum latitude covered by Web Mercator (in radians)
-    let merc_lat_max: f64 = 85.0511_f64.to_radians();
-
-    for out_y in 0..out_h {
-        // Output latitude: +90° at top (row 0), −90° at bottom (row out_h−1)
-        let lat_rad = std::f64::consts::FRAC_PI_2
-            - (out_y as f64 / out_h as f64) * std::f64::consts::PI;
-
-        if lat_rad.abs() > merc_lat_max {
-            // Beyond Mercator coverage → transparent (already zeroed)
-            continue;
-        }
-
-        // Mercator forward: y = ln(tan(π/4 + φ/2)), range ±π for ±85.05°
-        let merc_y = ((std::f64::consts::FRAC_PI_4 + lat_rad / 2.0).tan()).ln();
-
-        // Normalize to [0, 1] within the source image (top=+85°, bottom=−85°)
-        // merc_y ranges from +π (top, north) to −π (bottom, south)
-        let src_frac_y = (1.0 - merc_y / std::f64::consts::PI) / 2.0;
-        let src_y_f = src_frac_y * (src_h - 1) as f64;
-
-        // Bilinear interpolation: integer part + fractional part
-        let sy0 = (src_y_f as usize).min(src_h - 2);
-        let sy1 = sy0 + 1;
-        let fy = (src_y_f - sy0 as f64) as f32;
-
-        for out_x in 0..out_w {
-            // X-axis is the same in both projections (linear in longitude)
-            let src_x_f = out_x as f64 * (src_w - 1) as f64 / (out_w - 1) as f64;
-            let sx0 = (src_x_f as usize).min(src_w - 2);
-            let sx1 = sx0 + 1;
-            let fx = (src_x_f - sx0 as f64) as f32;
-
-            // Sample 4 source pixels
-            let idx = |x: usize, y: usize| -> usize { (y * src_w + x) * 4 };
-            let i00 = idx(sx0, sy0);
-            let i10 = idx(sx1, sy0);
-            let i01 = idx(sx0, sy1);
-            let i11 = idx(sx1, sy1);
-
-            // Bilinear blend for each RGBA channel
-            let out_idx = (out_y * out_w + out_x) * 4;
-            for c in 0..4 {
-                let v00 = src.rgba[i00 + c] as f32;
-                let v10 = src.rgba[i10 + c] as f32;
-                let v01 = src.rgba[i01 + c] as f32;
-                let v11 = src.rgba[i11 + c] as f32;
-
-                let top = v00 + (v10 - v00) * fx;
-                let bot = v01 + (v11 - v01) * fx;
-                let val = top + (bot - top) * fy;
-
-                out_rgba[out_idx + c] = val.round() as u8;
-            }
-        }
-    }
-
-    Ok(LayerImage {
-        rgba: out_rgba,
-        width: DEFAULT_WIDTH,
-        height: DEFAULT_HEIGHT,
-    })
+    reproject::to_equirect(
+        &src,
+        Crs::WebMercator,
+        Crs::WebMercator.world_bbox(),
+        DEFAULT_WIDTH,
+        DEFAULT_HEIGHT,
+    )
 }
 
 /// Decodes raw image bytes into RGBA pixel data.
