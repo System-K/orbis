@@ -18,6 +18,7 @@
 // - Each service has its own attribution requirements
 // =============================================================================
 
+pub mod capabilities;
 pub mod crs;
 pub mod reproject;
 
