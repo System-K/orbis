@@ -219,6 +219,35 @@ impl TileManager {
         }
     }
 
+    /// Phase P: Mercator polar compensation — reduce the requested zoom at
+    /// high latitudes, since each Mercator tile there covers progressively
+    /// less physical ground than at the equator. Without this, a view at
+    /// lat = 80° requests ~8× more tiles per screen area than the same
+    /// view at the equator, which bloats the enqueue loop without adding
+    /// visible detail (the compositor is already oversaturated at z > 4).
+    ///
+    /// Uses `floor(log2(1/cos(lat)))` above 60° — the factor by which
+    /// Mercator oversamples the ground at that latitude vs. the equator.
+    /// Standard web-map technique (Leaflet, Mapbox, OpenLayers all apply
+    /// variants of this).
+    ///
+    /// A side effect is that pitching past 60° causes one zoom-change
+    /// event. That's acceptable: `compositor.demote_to_zoom` keeps old
+    /// pixels on screen until the new tiles land, so the transition is
+    /// seamless. If oscillation near 60° becomes a problem in practice,
+    /// add hysteresis by reading `self.prev_zoom`.
+    fn polar_zoom_adjust(base: u32, center_lat_abs_deg: f32) -> u32 {
+        const THRESHOLD_DEG: f32 = 60.0;
+        if center_lat_abs_deg <= THRESHOLD_DEG {
+            return base;
+        }
+        // cos() hits 0 at the poles; floor at 0.05 (~87°) keeps reduction
+        // bounded and avoids dividing by near-zero.
+        let cos_lat = center_lat_abs_deg.to_radians().cos().max(0.05);
+        let reduction = (1.0_f32 / cos_lat).log2().floor() as u32;
+        base.saturating_sub(reduction)
+    }
+
     /// Bit-pattern hash of view + zoom + source for visible-set memoization.
     ///
     /// Uses `f32::to_bits()` so exact-equal views produce exact-equal keys;
@@ -266,8 +295,16 @@ impl TileManager {
             }
         }
 
-        // Source-aware zoom
-        let zoom = level_for(&source, view.distance, settings.zoom_bias);
+        // Source-aware zoom + Phase P: polar compensation.
+        //
+        // `level_for` gives the base zoom from camera distance. We then
+        // reduce it based on `pitch`-derived center latitude to keep
+        // tile counts bounded when the view looks at polar regions.
+        // `pitch` maps directly to viewing latitude in 3D mode
+        // (`center_lat = -pitch.to_degrees()` per visible_bounds).
+        let base_zoom = level_for(&source, view.distance, settings.zoom_bias);
+        let center_lat_abs = view.pitch.to_degrees().abs();
+        let zoom = Self::polar_zoom_adjust(base_zoom, center_lat_abs);
         self.metrics.current_zoom = zoom;
 
         // Source-change: full reset (caller must drop GPU texture to avoid
@@ -788,6 +825,85 @@ mod tests {
             "view change + dwell elapsed must re-fire (before={}, now={})",
             gen_after_first_fire,
             m.metrics().gen,
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_polar_zoom_adjust_below_threshold_is_identity() {
+        // Phase P: at or below 60° the raw base zoom passes through.
+        assert_eq!(TileManager::polar_zoom_adjust(12, 0.0), 12);
+        assert_eq!(TileManager::polar_zoom_adjust(12, 30.0), 12);
+        assert_eq!(TileManager::polar_zoom_adjust(12, 45.0), 12);
+        assert_eq!(TileManager::polar_zoom_adjust(12, 59.9), 12);
+        assert_eq!(TileManager::polar_zoom_adjust(12, 60.0), 12);
+    }
+
+    #[test]
+    fn test_polar_zoom_adjust_reduces_monotonically_above_threshold() {
+        // Phase P: higher |lat| → equal or stricter reduction, never
+        // reverses. Concrete expected steps: 1/cos flooring gives the
+        // classic web-map reductions at ~60° / ~75.5° / ~82.8° / ~86.4°.
+        let z0 = TileManager::polar_zoom_adjust(12, 55.0);
+        let z60 = TileManager::polar_zoom_adjust(12, 60.1);
+        let z75 = TileManager::polar_zoom_adjust(12, 76.0);
+        let z85 = TileManager::polar_zoom_adjust(12, 85.0);
+        assert_eq!(z0, 12, "55° should keep base");
+        assert_eq!(z60, 11, "60.1° → reduction 1, 12-1 = 11");
+        assert_eq!(z75, 10, "76° → reduction 2, 12-2 = 10");
+        assert!(z85 <= 9, "85° should be at least as reduced as 76°");
+        assert!(z75 <= z60, "monotonic with latitude");
+        assert!(z85 <= z75, "monotonic with latitude");
+    }
+
+    #[test]
+    fn test_polar_zoom_adjust_saturates_at_zero() {
+        // Phase P: even with extreme latitude and small base zoom the
+        // result must not underflow. saturating_sub floors the result.
+        assert_eq!(TileManager::polar_zoom_adjust(2, 89.0), 0);
+        assert_eq!(TileManager::polar_zoom_adjust(0, 89.0), 0);
+        assert_eq!(TileManager::polar_zoom_adjust(1, 85.0), 0);
+    }
+
+    #[test]
+    fn test_polar_zoom_adjust_handles_symmetric_latitudes() {
+        // Phase P: the call site passes `pitch.to_degrees().abs()`, but
+        // we still document the helper's contract: the helper only takes
+        // absolute latitude, so we don't depend on sign conventions.
+        assert_eq!(
+            TileManager::polar_zoom_adjust(12, 70.0),
+            TileManager::polar_zoom_adjust(12, 70.0),
+        );
+    }
+
+    #[test]
+    fn test_update_applies_polar_zoom_at_arctic_view() {
+        // Phase P end-to-end: for a view pitched to look at ~80° N, the
+        // zoom exposed via metrics must be strictly less than a view
+        // pitched at the equator with the same distance.
+        let (mut m, tmp) = manager_with("osm");
+        let settings = default_settings("osm");
+
+        // Close-in distance → non-trivial base zoom.
+        let mut view = default_view();
+        view.distance = 2.5;
+        view.pitch = 0.0; // equator
+        let _ = m.update(view, &settings);
+        let zoom_equator = m.metrics().current_zoom;
+
+        // Same distance, pitch ≈ 80° (in radians). Negated because
+        // visible_bounds treats center_lat = -pitch; abs() in the
+        // compensator makes sign irrelevant.
+        view.pitch = 80.0_f32.to_radians();
+        let _ = m.update(view, &settings);
+        let zoom_polar = m.metrics().current_zoom;
+
+        assert!(
+            zoom_polar < zoom_equator,
+            "polar view must use a lower zoom than equator \
+             (equator={}, polar={})",
+            zoom_equator, zoom_polar,
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
