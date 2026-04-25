@@ -116,6 +116,63 @@ impl Crs {
         let fy = (b.max_y - y) / (b.max_y - b.min_y);
         Some((fx, fy))
     }
+
+    /// Inverse transform: CRS-native (x, y) → geographic (lat°, lon°).
+    ///
+    /// This is the direction needed for **vector** reprojection: each point
+    /// in the source data is in CRS units (meters for Mercator, degrees for
+    /// EPSG:4326). To draw it on a WGS84 globe, convert each point through
+    /// this function.
+    ///
+    /// (The pixel-sampling pipeline in `wms::reproject` uses the *forward*
+    /// transform `latlon_to_fracxy` — different direction, different use.)
+    ///
+    /// Returns `None` for points outside the CRS's valid domain (e.g. Web
+    /// Mercator past the polar cutoff).
+    pub fn xy_to_latlon(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        match self {
+            Crs::EquirectWgs84 => {
+                // x is lon, y is lat — identity.
+                if x.abs() > 180.0 || y.abs() > 90.0 {
+                    return None;
+                }
+                Some((y, x))
+            }
+            Crs::WebMercator => {
+                // Inverse Mercator: φ = atan(sinh(y / R)), λ = x / R
+                let lon_rad = x / MERCATOR_EARTH_RADIUS;
+                let lat_rad = (y / MERCATOR_EARTH_RADIUS).sinh().atan();
+                if lat_rad.is_nan() || lon_rad.is_nan() {
+                    return None;
+                }
+                let lat_deg = lat_rad.to_degrees();
+                let lon_deg = lon_rad.to_degrees();
+                if lat_deg.abs() > 90.0 || lon_deg.abs() > 180.0 {
+                    return None;
+                }
+                Some((lat_deg, lon_deg))
+            }
+        }
+    }
+
+    /// Returns true when `(x, y)` falls inside the typical inhabited range
+    /// of this CRS's coordinates. Used by projection detection to check
+    /// whether a declared CRS is consistent with the data's actual numbers.
+    ///
+    /// "Plausible" is intentionally loose — we want to catch obvious lies
+    /// (lon=600000 in a "WGS84" file), not flag genuine edge cases (a
+    /// research dataset at the South Pole). The bounds are roughly the
+    /// CRS's valid mathematical domain, not the human-occupied subset.
+    pub fn is_plausible_coord(&self, x: f64, y: f64) -> bool {
+        match self {
+            Crs::EquirectWgs84 => x.abs() <= 180.0 && y.abs() <= 90.0,
+            Crs::WebMercator => {
+                // World Mercator extent (±20037508 m). Allow slight slop.
+                const LIMIT: f64 = 20_100_000.0;
+                x.abs() <= LIMIT && y.abs() <= LIMIT
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -191,5 +248,91 @@ mod tests {
         let small_bbox = Bbox::new(0.0, 0.0, 10.0, 10.0);
         // (lat=50, lon=50) is outside
         assert!(Crs::EquirectWgs84.latlon_to_fracxy(50.0, 50.0, &small_bbox).is_none());
+    }
+
+    // -- Inverse transform (xy_to_latlon) -- needed for vector reprojection.
+
+    #[test]
+    fn equirect_inverse_is_identity_swap() {
+        // In equirect (WGS84), x=lon, y=lat. xy_to_latlon returns (lat, lon).
+        let (lat, lon) = Crs::EquirectWgs84.xy_to_latlon(10.0, 50.0).unwrap();
+        assert!((lat - 50.0).abs() < 1e-12);
+        assert!((lon - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn equirect_inverse_rejects_out_of_range() {
+        // Anything past the valid lat/lon domain → None.
+        assert!(Crs::EquirectWgs84.xy_to_latlon(200.0, 0.0).is_none());
+        assert!(Crs::EquirectWgs84.xy_to_latlon(0.0, 100.0).is_none());
+    }
+
+    #[test]
+    fn mercator_inverse_recovers_origin() {
+        // (0, 0) in Mercator meters is (lat=0, lon=0).
+        let (lat, lon) = Crs::WebMercator.xy_to_latlon(0.0, 0.0).unwrap();
+        assert!((lat).abs() < 1e-12);
+        assert!((lon).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mercator_inverse_known_point_berlin() {
+        // Berlin: ~13.4°E, 52.5°N. Mercator forward gives ~(1492000, 6894000).
+        // Inverse should recover the lat/lon within reasonable tolerance.
+        let x = 1_492_000.0;
+        let y = 6_894_000.0;
+        let (lat, lon) = Crs::WebMercator.xy_to_latlon(x, y).unwrap();
+        assert!((lat - 52.5).abs() < 0.1, "lat = {lat}");
+        assert!((lon - 13.4).abs() < 0.1, "lon = {lon}");
+    }
+
+    #[test]
+    fn mercator_inverse_round_trips_through_forward() {
+        // Pick a point, forward-transform, inverse-transform, expect to land
+        // back on the original within numerical tolerance.
+        let bbox = Crs::WebMercator.world_bbox();
+        let original_lat = 45.0;
+        let original_lon = -73.0;
+        let (fx, fy) = Crs::WebMercator
+            .latlon_to_fracxy(original_lat, original_lon, &bbox)
+            .unwrap();
+        // Convert back to absolute Mercator meters from fractional bbox.
+        let x = bbox.min_x + fx * (bbox.max_x - bbox.min_x);
+        let y = bbox.max_y - fy * (bbox.max_y - bbox.min_y);
+        let (lat, lon) = Crs::WebMercator.xy_to_latlon(x, y).unwrap();
+        assert!((lat - original_lat).abs() < 1e-9);
+        assert!((lon - original_lon).abs() < 1e-9);
+    }
+
+    // -- is_plausible_coord -- structural detection of mislabeled data.
+
+    #[test]
+    fn plausible_wgs84_accepts_lat_lon_range() {
+        assert!(Crs::EquirectWgs84.is_plausible_coord(13.4, 52.5)); // Berlin
+        assert!(Crs::EquirectWgs84.is_plausible_coord(-180.0, -90.0)); // edges
+        assert!(Crs::EquirectWgs84.is_plausible_coord(180.0, 90.0));
+    }
+
+    #[test]
+    fn plausible_wgs84_rejects_projected_meters() {
+        // Classic Terrestris-class lie: file says EPSG:4326 but coords are
+        // in meters. Easy structural check.
+        assert!(!Crs::EquirectWgs84.is_plausible_coord(600_000.0, 5_500_000.0));
+        assert!(!Crs::EquirectWgs84.is_plausible_coord(1_492_000.0, 6_894_000.0));
+    }
+
+    #[test]
+    fn plausible_mercator_accepts_world_extent() {
+        // Mercator world extent ≈ ±20037508 m.
+        assert!(Crs::WebMercator.is_plausible_coord(0.0, 0.0));
+        assert!(Crs::WebMercator.is_plausible_coord(20_037_000.0, 20_037_000.0));
+        assert!(Crs::WebMercator.is_plausible_coord(-20_037_000.0, -20_037_000.0));
+    }
+
+    #[test]
+    fn plausible_mercator_rejects_lat_lon_or_far_outside() {
+        // Mercator coords aren't <1 — degree values can't be Mercator meters.
+        // A coord like (500_000_000, 500_000_000) is way past the world extent.
+        assert!(!Crs::WebMercator.is_plausible_coord(500_000_000.0, 500_000_000.0));
     }
 }
