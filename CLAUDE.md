@@ -124,7 +124,7 @@ rand 0.9, earcutr 0.4, rfd 0.15, quick-xml 0.37. Edition 2021.
 See PLAN.md for full roadmap. Key open items:
 - M17d: REST→GeoJSON feeds ✅ (RestFeedManager done)
 - M17p: WMS GetCapabilities auto-detection ✅ (layer dropdown + CRS auto-detect)
-- M17p-3: Generic CRS reprojection via `proj4rs` (planned, not started)
+- M17p-3: Generic CRS reprojection ✅ (own engine, EPSG:4326 + EPSG:3857; per-source `SourceBehavior` discovery in `src/wms/`). See `docs/projection-honesty.md` before adding shapefile/GeoTIFF/GML — same trust-the-metadata trap, same defence pattern.
 - M17h-o: Format imports (KML, GPX, CSV, Shapefile, etc.)
 - M17c: Custom XYZ tiles (deferred)
 - M17g: Auth headers support
@@ -133,4 +133,3 @@ See PLAN.md for full roadmap. Key open items:
 - egui text fields have no right-click context menu (egui limitation). Ctrl+V works.
 - main.rs at 49.2KB — needs refactoring split ASAP
 - Regional WMS sources (e.g. Brandenburg ALKIS) need BBOX from GetCapabilities, not global
-- Some WMS servers (Terrestris OSM) report EPSG:4326 but deliver Mercator-distorted images
