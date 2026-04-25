@@ -30,7 +30,7 @@ impl Bbox {
 }
 
 /// A coordinate reference system Orbis can consume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Crs {
     /// EPSG:4326 — geographic lat/lon on WGS84, plate-carrée when rendered 2:1.
     EquirectWgs84,

@@ -52,6 +52,7 @@ pub fn capabilities_url(base_url: &str, wms_version: &str) -> String {
 /// Parses a Capabilities XML document and returns the CRS list for
 /// `target_layer`. Unknown CRSes are silently skipped (we can't use them
 /// anyway). Returns an empty result if the layer isn't present.
+#[allow(dead_code)] // consumed by provider wiring (commit 3c)
 pub fn parse_capabilities(xml: &str, target_layer: &str) -> Result<LayerCapabilities, String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
