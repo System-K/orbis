@@ -21,6 +21,7 @@
 pub mod behavior;
 pub mod capabilities;
 pub mod crs;
+pub mod probe;
 pub mod reproject;
 
 use std::fs;
