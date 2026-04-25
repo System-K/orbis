@@ -27,7 +27,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::wms::capabilities::LayerCapabilities;
-use crate::wms::crs::Crs;
+use crate::crs::Crs;
 
 /// How long a cached behaviour stays valid before we re-run discovery.
 /// 30 days strikes a balance: server upgrades happen, but rarely; we don't

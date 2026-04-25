@@ -41,6 +41,7 @@ use winit::window::Window;
 
 // Module declarations
 mod camera;
+mod crs;
 mod gibs;
 mod gui;
 mod i18n;

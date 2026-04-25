@@ -24,7 +24,7 @@
 // =============================================================================
 
 use crate::provider::LayerImage;
-use crate::wms::crs::Crs;
+use crate::crs::Crs;
 use crate::wms::reproject;
 
 /// Outcome of a self-consistency check.

@@ -15,7 +15,7 @@
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-use crate::wms::crs::Crs;
+use crate::crs::Crs;
 
 /// What we need from a server's GetCapabilities doc for a specific layer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

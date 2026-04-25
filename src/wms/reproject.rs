@@ -11,7 +11,7 @@
 // =============================================================================
 
 use crate::provider::LayerImage;
-use crate::wms::crs::{Bbox, Crs};
+use crate::crs::{Bbox, Crs};
 
 /// Reprojects `src` (whose pixels cover `src_bbox` in `src_crs` units) into an
 /// equirectangular WGS84 image of size `out_w × out_h` covering the whole globe.
