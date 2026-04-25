@@ -32,7 +32,6 @@ pub struct CustomSourceForm {
     pub wms_format_png: bool, // true=PNG, false=JPEG
     pub wms_transparent: bool,
     pub wms_uses_time: bool,
-    pub wms_reproject_mercator: bool,
     /// WMS version: true = 1.3.0, false = 1.1.1
     pub wms_version_130: bool,
     /// GetCapabilities detection status
@@ -62,7 +61,6 @@ impl Default for CustomSourceForm {
             wms_format_png: true,
             wms_transparent: true,
             wms_uses_time: false,
-            wms_reproject_mercator: false,
             wms_version_130: true,
             wms_caps_status: crate::wms_caps::CapsStatus::Idle,
             wms_caps_rx: None,

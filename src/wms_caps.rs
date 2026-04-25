@@ -96,11 +96,6 @@ pub fn select_best_crs(supported: &[String]) -> CrsStrategy {
     }
 }
 
-/// Returns whether a CRS strategy requires Mercator reprojection.
-pub fn needs_mercator_reproject(strategy: &CrsStrategy) -> bool {
-    matches!(strategy, CrsStrategy::WebMercator)
-}
-
 /// Returns the CRS string to use in the GetMap request.
 #[allow(dead_code)]
 pub fn crs_for_request(strategy: &CrsStrategy) -> &str {

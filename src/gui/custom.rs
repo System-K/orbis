@@ -200,8 +200,8 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                                             form.name = first.title.clone();
                                         }
                                         form.wms_uses_time = first.has_time;
-                                        let strategy = crate::wms_caps::select_best_crs(&first.supported_crs);
-                                        form.wms_reproject_mercator = crate::wms_caps::needs_mercator_reproject(&strategy);
+                                        // CRS is auto-discovered at fetch time via
+                                        // GetCapabilities — no longer set per-source.
                                     }
                                     form.wms_caps_status = crate::wms_caps::CapsStatus::Ready(caps);
                                 }
@@ -265,12 +265,7 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                                                     form.name = layer.title.clone();
                                                 }
                                                 form.wms_uses_time = layer.has_time;
-                                                // CRS auto-detection
-                                                let strategy = crate::wms_caps::select_best_crs(
-                                                    &layer.supported_crs
-                                                );
-                                                form.wms_reproject_mercator =
-                                                    crate::wms_caps::needs_mercator_reproject(&strategy);
+                                                // CRS picked at fetch time, not here.
                                             }
                                         }
                                     });
@@ -314,10 +309,6 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         });
                         ui.checkbox(&mut form.wms_transparent, "Transparent background");
                         ui.checkbox(&mut form.wms_uses_time, "Supports TIME parameter");
-                        ui.checkbox(
-                            &mut form.wms_reproject_mercator,
-                            "Source is Web Mercator (needs reprojection)",
-                        );
                         ui.horizontal(|ui| {
                             ui.label("WMS Version:");
                             ui.selectable_value(&mut form.wms_version_130, true, "1.3.0");
@@ -417,7 +408,9 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                             },
                             transparent: form.wms_transparent,
                             uses_time: form.wms_uses_time,
-                            reproject_mercator: form.wms_reproject_mercator,
+                            // Auto-discovered at fetch time. Hand-edited JSON can
+                            // still set this to `true` as a manual legacy override.
+                            reproject_mercator: false,
                             wms_version: if form.wms_version_130 {
                                 "1.3.0".to_string()
                             } else {
