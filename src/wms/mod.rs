@@ -30,11 +30,17 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDate;
 
 use crate::provider::{LayerImage, LayerProvider, ProviderCategory, ProviderInfo};
-use crs::Crs;
+use behavior::SourceBehavior;
 
 /// Default resolution for WMS downloads (same as GIBS).
 const DEFAULT_WIDTH: u32 = 2048;
 const DEFAULT_HEIGHT: u32 = 1024;
+
+/// WMS protocol version Orbis sends for built-in layers. 1.3.0 is the modern
+/// standard and is supported by every server we ship configs for; the URL
+/// builder handles axis-order quirks for both 1.3.0 and 1.1.x for custom
+/// sources that need the older protocol.
+const BUILTIN_WMS_VERSION: &str = "1.3.0";
 
 // =============================================================================
 // WMS Layer Definition
@@ -70,11 +76,6 @@ struct WmsLayerDef {
     attribution: &'static str,
     /// Default opacity (0.0–1.0)
     default_opacity: f32,
-    /// If true, the source image is assumed to be Web Mercator
-    /// and will be reprojected to equirectangular after download.
-    /// Needed for tile-based services (OSM, OpenTopoMap) that render
-    /// in Mercator internally even when EPSG:4326 is requested.
-    reproject_mercator: bool,
 }
 
 // =============================================================================
@@ -98,7 +99,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Basemap,
         attribution: "© OpenStreetMap contributors / Terrestris",
         default_opacity: 0.35,
-        reproject_mercator: true,
     },
     WmsLayerDef {
         id: "osm_topo",
@@ -113,7 +113,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Basemap,
         attribution: "© OpenStreetMap contributors / OpenTopoMap / Terrestris",
         default_opacity: 0.35,
-        reproject_mercator: true,
     },
 
     // =========================================================================
@@ -136,7 +135,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Weather,
         attribution: "© DWD (Deutscher Wetterdienst)",
         default_opacity: 0.5,
-        reproject_mercator: false,
     },
     WmsLayerDef {
         id: "dwd_icon_precipitation",
@@ -151,7 +149,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Weather,
         attribution: "© DWD (Deutscher Wetterdienst)",
         default_opacity: 0.5,
-        reproject_mercator: false,
     },
     WmsLayerDef {
         id: "dwd_icon_wind",
@@ -166,7 +163,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Weather,
         attribution: "© DWD (Deutscher Wetterdienst)",
         default_opacity: 0.5,
-        reproject_mercator: false,
     },
     WmsLayerDef {
         id: "dwd_icon_pressure",
@@ -181,7 +177,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Weather,
         attribution: "© DWD (Deutscher Wetterdienst)",
         default_opacity: 0.5,
-        reproject_mercator: false,
     },
     WmsLayerDef {
         id: "dwd_warnings",
@@ -196,7 +191,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Weather,
         attribution: "© DWD (Deutscher Wetterdienst)",
         default_opacity: 0.6,
-        reproject_mercator: false,
     },
 
     // =========================================================================
@@ -219,7 +213,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Geology,
         attribution: "© GEBCO / Nippon Foundation–GEBCO Seabed 2030 Project",
         default_opacity: 0.4,
-        reproject_mercator: false,
     },
     WmsLayerDef {
         id: "gebco_shaded_relief",
@@ -234,7 +227,6 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
         category: ProviderCategory::Geology,
         attribution: "© GEBCO / Nippon Foundation–GEBCO Seabed 2030 Project",
         default_opacity: 0.4,
-        reproject_mercator: false,
     },
 ];
 
@@ -244,9 +236,9 @@ const WMS_LAYERS: &[WmsLayerDef] = &[
 
 /// A generic WMS-backed layer provider.
 ///
-/// Fetches equirectangular images from any OGC WMS 1.3.0 server.
-/// Supports both time-varying (forecasts, observations) and
-/// static (basemaps) layers.
+/// On first fetch the provider runs `resolve_behavior` (capabilities-driven
+/// CRS discovery) and persists the result. Subsequent fetches reuse the
+/// cached behaviour until it ages out.
 pub struct WmsProvider {
     info: ProviderInfo,
     base_url: String,
@@ -255,7 +247,6 @@ pub struct WmsProvider {
     extension: String,
     uses_time: bool,
     transparent: bool,
-    reproject_mercator: bool,
 }
 
 impl WmsProvider {
@@ -278,49 +269,7 @@ impl WmsProvider {
             extension: def.extension.to_string(),
             uses_time: def.uses_time,
             transparent: def.transparent,
-            reproject_mercator: def.reproject_mercator,
         }
-    }
-
-    /// Builds the WMS GetMap URL.
-    ///
-    /// For Mercator-native sources (OSM, OpenTopoMap), requests in EPSG:3857
-    /// to get clean native-projection pixels. We reproject to equirectangular
-    /// ourselves, because Terrestris' server-side reprojection is broken.
-    fn build_url(&self, date: Option<&NaiveDate>) -> String {
-        let mut url = if self.reproject_mercator {
-            // Request in native Web Mercator (square image)
-            let extent = 20037508.3427892_f64;
-            format!(
-                "{}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS={}&FORMAT={}&WIDTH={}&HEIGHT={}&SRS=EPSG:3857&BBOX={},{},{},{}&STYLES=",
-                self.base_url,
-                self.layer_name,
-                self.format,
-                DEFAULT_WIDTH,
-                DEFAULT_WIDTH, // Square! Mercator world map is square
-                -extent, -extent, extent, extent,
-            )
-        } else {
-            // Standard EPSG:4326 equirectangular request
-            format!(
-                "{}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS={}&FORMAT={}&WIDTH={}&HEIGHT={}&BBOX=-90,-180,90,180&CRS=EPSG:4326&STYLES=",
-                self.base_url,
-                self.layer_name,
-                self.format,
-                DEFAULT_WIDTH,
-                DEFAULT_HEIGHT,
-            )
-        };
-
-        if self.transparent {
-            url.push_str("&TRANSPARENT=true");
-        }
-
-        if let Some(d) = date {
-            url.push_str(&format!("&TIME={}", d.format("%Y-%m-%d")));
-        }
-
-        url
     }
 }
 
@@ -333,6 +282,16 @@ impl LayerProvider for WmsProvider {
         fs::create_dir_all(cache_dir)
             .map_err(|e| format!("Could not create cache directory: {}", e))?;
 
+        // Resolve the source's discovered behaviour (cached after first call).
+        let behavior = resolve_behavior(
+            cache_dir,
+            &self.info.id,
+            &self.base_url,
+            &self.layer_name,
+            BUILTIN_WMS_VERSION,
+            None, // built-in layers never use the legacy flag
+        );
+
         // For timeless layers (basemaps): cache without date in filename
         let cached = if self.uses_time {
             cache_dir.join(format!(
@@ -342,16 +301,11 @@ impl LayerProvider for WmsProvider {
                 self.extension,
             ))
         } else {
-            cache_dir.join(format!(
-                "{}.{}",
-                self.info.id,
-                self.extension,
-            ))
+            cache_dir.join(format!("{}.{}", self.info.id, self.extension,))
         };
 
         // 1. Cache hit?
         if cached.exists() {
-            // For timeless layers, check if cache is older than 24h
             let use_cache = if self.uses_time {
                 true // Date-based layers are immutable per date
             } else {
@@ -359,32 +313,31 @@ impl LayerProvider for WmsProvider {
             };
 
             if use_cache {
-                log::info!(
-                    "WMS cache hit: {} ({})",
-                    self.info.label,
-                    cached.display()
-                );
+                log::info!("WMS cache hit: {} ({})", self.info.label, cached.display());
                 let raw_bytes = fs::read(&cached)
                     .map_err(|e| format!("Could not read cache file: {}", e))?;
-                let mut image = decode_image(&raw_bytes, &self.info.label)?;
-                if self.reproject_mercator {
-                    image = reproject_mercator_to_equirect(image)?;
-                }
-                return Ok(image);
+                let image = decode_image(&raw_bytes, &self.info.label)?;
+                return apply_behavior_reproject(image, &behavior, &self.info.label);
             }
         }
 
         // 2. Download from WMS
-        let time_param = if self.uses_time { Some(date) } else { None };
-        let url = self.build_url(time_param);
+        let mut url = behavior::build_get_map_url(
+            &self.base_url,
+            &self.layer_name,
+            &behavior,
+            BUILTIN_WMS_VERSION,
+            &self.format,
+            self.transparent,
+        );
+        if self.uses_time {
+            url.push_str(&format!("&TIME={}", date.format("%Y-%m-%d")));
+        }
         log::info!("WMS download: {} → {}", self.info.label, url);
 
         let response = ureq::get(&url)
             .call()
-            .map_err(|e| format!(
-                "WMS download failed ({}): {}",
-                self.info.id, e
-            ))?;
+            .map_err(|e| format!("WMS download failed ({}): {}", self.info.id, e))?;
 
         // Check if the response is an image (not an error page)
         let is_error = response
@@ -405,7 +358,6 @@ impl LayerProvider for WmsProvider {
             ));
         }
 
-        // Read image bytes
         let bytes = response
             .into_body()
             .read_to_vec()
@@ -417,24 +369,12 @@ impl LayerProvider for WmsProvider {
             bytes.len() / 1024
         );
 
-        // 3. Save to cache
         if let Err(e) = fs::write(&cached, &bytes) {
             log::warn!("WMS cache save failed: {}", e);
         }
 
-        // 4. Decode image → RGBA
-        let mut layer_image = decode_image(&bytes, &self.info.label)?;
-
-        // 5. Reproject Mercator → Equirectangular if needed
-        if self.reproject_mercator {
-            layer_image = reproject_mercator_to_equirect(layer_image)?;
-            log::info!(
-                "WMS reprojected Mercator → Equirectangular: {}",
-                self.info.label
-            );
-        }
-
-        Ok(layer_image)
+        let layer_image = decode_image(&bytes, &self.info.label)?;
+        apply_behavior_reproject(layer_image, &behavior, &self.info.label)
     }
 
     fn fetch_with_fallback(&self, cache_dir: &Path) -> Result<(LayerImage, NaiveDate), String> {
@@ -476,31 +416,126 @@ impl LayerProvider for WmsProvider {
 }
 
 // =============================================================================
-// Helper functions
+// Behaviour resolution + reprojection — shared between built-in WmsProvider
+// and CustomWmsProvider.
 // =============================================================================
 
-/// Reprojects a Web Mercator image (square, EPSG:3857) to equirectangular.
+/// Loads a cached behaviour or, on miss, runs discovery against the server.
+/// Always returns *some* behaviour — discovery failures fall back to a safe
+/// default (assume EPSG:4326, trust the server). The result is persisted so
+/// the next fetch hits the cache.
 ///
-/// Input:  2048×2048 (or any square) Mercator image covering ±85.0511° latitude
-/// Output: 2048×1024 equirectangular image covering ±90° latitude
-///
-/// Web Mercator maps latitude with: y = ln(tan(π/4 + φ/2))
-/// This function inverts that mapping for each output row.
-/// Poles beyond ±85.05° are filled with transparent pixels.
-///
-/// Public wrapper for use by custom_source.rs.
-pub fn reproject_mercator_pub(src: LayerImage) -> Result<LayerImage, String> {
-    reproject_mercator_to_equirect(src)
+/// `legacy_reproject_mercator` is a back-compat hook for the old per-source
+/// `reproject_mercator: bool` flag in user JSON configs. When set, we skip
+/// discovery and use that flag's intent — but log a deprecation notice
+/// because the auto-discovery path is now the supported one.
+pub fn resolve_behavior(
+    cache_dir: &Path,
+    source_id: &str,
+    base_url: &str,
+    layer_name: &str,
+    wms_version: &str,
+    legacy_reproject_mercator: Option<bool>,
+) -> SourceBehavior {
+    if let Some(flag) = legacy_reproject_mercator {
+        log::warn!(
+            "WMS source '{}' uses the deprecated `reproject_mercator` flag. \
+             Remove it from your config to enable automatic CRS discovery.",
+            source_id
+        );
+        let b = SourceBehavior::from_legacy_flag(flag);
+        behavior::save_behavior(cache_dir, source_id, &b);
+        return b;
+    }
+
+    if let Some(cached) = behavior::load_behavior(cache_dir, source_id) {
+        log::debug!(
+            "WMS '{}': behaviour cache hit ({:?}, request {})",
+            source_id,
+            cached.discovery_method,
+            cached.request_crs.epsg_code(),
+        );
+        return cached;
+    }
+
+    let discovered = discover_behavior_via_capabilities(base_url, layer_name, wms_version);
+    log::info!(
+        "WMS '{}': discovered behaviour {:?}, will request {}",
+        source_id,
+        discovered.discovery_method,
+        discovered.request_crs.epsg_code(),
+    );
+    behavior::save_behavior(cache_dir, source_id, &discovered);
+    discovered
 }
 
-fn reproject_mercator_to_equirect(src: LayerImage) -> Result<LayerImage, String> {
-    reproject::to_equirect(
-        &src,
-        Crs::WebMercator,
-        Crs::WebMercator.world_bbox(),
+/// Fetches GetCapabilities and picks the most-preferred CRS the server
+/// declares. On any failure (network, parse, no usable CRS) returns a
+/// fallback default — the layer will still try to load, just without the
+/// benefit of the discovery's CRS preference.
+fn discover_behavior_via_capabilities(
+    base_url: &str,
+    layer_name: &str,
+    wms_version: &str,
+) -> SourceBehavior {
+    let url = capabilities::capabilities_url(base_url, wms_version);
+    log::info!("WMS capabilities: {}", url);
+
+    let xml = match ureq::get(&url).call() {
+        Ok(resp) => match resp.into_body().read_to_string() {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("WMS capabilities body read failed ({}): {}", base_url, e);
+                return SourceBehavior::fallback_default();
+            }
+        },
+        Err(e) => {
+            log::warn!("WMS capabilities fetch failed ({}): {}", base_url, e);
+            return SourceBehavior::fallback_default();
+        }
+    };
+
+    match capabilities::parse_capabilities(&xml, layer_name) {
+        Ok(caps) => match SourceBehavior::from_capabilities(&caps) {
+            Some(b) => b,
+            None => {
+                log::warn!(
+                    "WMS layer '{}' declares no CRS we recognise; using fallback",
+                    layer_name
+                );
+                SourceBehavior::fallback_default()
+            }
+        },
+        Err(e) => {
+            log::warn!("WMS '{}' capabilities parse failed: {}", layer_name, e);
+            SourceBehavior::fallback_default()
+        }
+    }
+}
+
+/// Reprojects a freshly decoded image into equirectangular if the discovered
+/// behaviour calls for it. Pass-through for honest equirect sources.
+pub fn apply_behavior_reproject(
+    image: LayerImage,
+    behavior: &SourceBehavior,
+    label: &str,
+) -> Result<LayerImage, String> {
+    if !behavior.needs_reproject() {
+        return Ok(image);
+    }
+    let reprojected = reproject::to_equirect(
+        &image,
+        behavior.response_crs,
+        behavior.response_crs.world_bbox(),
         DEFAULT_WIDTH,
         DEFAULT_HEIGHT,
-    )
+    )?;
+    log::info!(
+        "WMS reprojected {} → equirectangular: {}",
+        behavior.response_crs.epsg_code(),
+        label,
+    );
+    Ok(reprojected)
 }
 
 /// Decodes raw image bytes into RGBA pixel data.

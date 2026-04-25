@@ -1,7 +1,3 @@
-// Items here are exercised by unit tests but only wired into the providers in
-// commit 3c — the transitional dead-code lint isn't useful during the split.
-#![allow(dead_code)]
-
 // =============================================================================
 // SourceBehavior — what a WMS provider has learned about a remote layer.
 // =============================================================================
@@ -31,7 +27,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::wms::capabilities::LayerCapabilities;
-use crate::wms::crs::{Bbox, Crs};
+use crate::wms::crs::Crs;
 
 /// How long a cached behaviour stays valid before we re-run discovery.
 /// 30 days strikes a balance: server upgrades happen, but rarely; we don't
@@ -78,16 +74,6 @@ pub enum DiscoveryMethod {
 }
 
 impl SourceBehavior {
-    /// Returns the bbox as a typed `Bbox` for the reprojection engine.
-    pub fn request_bbox_typed(&self) -> Bbox {
-        Bbox::new(
-            self.request_bbox[0],
-            self.request_bbox[1],
-            self.request_bbox[2],
-            self.request_bbox[3],
-        )
-    }
-
     /// True when the response needs a client-side reprojection pass.
     /// (False only when we're requesting and receiving plain equirect.)
     pub fn needs_reproject(&self) -> bool {
@@ -233,6 +219,60 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+// =============================================================================
+// URL building — shared between built-in WmsProvider and CustomWmsProvider
+// =============================================================================
+
+/// Builds a WMS GetMap URL using a discovered SourceBehavior.
+///
+/// Handles the WMS 1.1.x vs 1.3.0 differences:
+/// - 1.1.x uses `SRS=`, BBOX always (minx, miny, maxx, maxy)
+/// - 1.3.0 uses `CRS=`, BBOX axis order depends on the CRS:
+///   - EPSG:4326 (geographic): (minlat, minlon, maxlat, maxlon)
+///   - EPSG:3857 (projected):  (minx, miny, maxx, maxy)
+///
+/// Caller is responsible for appending the `&TIME=...` parameter when the
+/// layer is time-aware — kept out of here so this module doesn't depend on
+/// chrono.
+pub fn build_get_map_url(
+    base_url: &str,
+    layer_name: &str,
+    behavior: &SourceBehavior,
+    wms_version: &str,
+    format: &str,
+    transparent: bool,
+) -> String {
+    let is_130 = wms_version.starts_with("1.3");
+    let crs_param = if is_130 { "CRS" } else { "SRS" };
+
+    let b = &behavior.request_bbox;
+    let bbox_str = if is_130 && behavior.request_crs == Crs::EquirectWgs84 {
+        // 1.3.0 + geographic CRS: lat-first axis order.
+        format!("{},{},{},{}", b[1], b[0], b[3], b[2])
+    } else {
+        // 1.1.x always, or 1.3.0 + projected CRS: x,y axis order.
+        format!("{},{},{},{}", b[0], b[1], b[2], b[3])
+    };
+
+    let mut url = format!(
+        "{}?SERVICE=WMS&VERSION={}&REQUEST=GetMap&LAYERS={}&FORMAT={}\
+         &WIDTH={}&HEIGHT={}&{}={}&BBOX={}&STYLES=",
+        base_url,
+        wms_version,
+        layer_name,
+        format,
+        behavior.request_width,
+        behavior.request_height,
+        crs_param,
+        behavior.request_crs.epsg_code(),
+        bbox_str,
+    );
+    if transparent {
+        url.push_str("&TRANSPARENT=true");
+    }
+    url
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +407,59 @@ mod tests {
         assert!(load_behavior(&dir, "bad:layer").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn url_builder_uses_crs_param_and_xy_axis_for_3857() {
+        let b = SourceBehavior::for_crs(Crs::WebMercator, DiscoveryMethod::PreferredMercator);
+        let url = build_get_map_url(
+            "https://example.com/wms",
+            "OSM-WMS",
+            &b,
+            "1.3.0",
+            "image/png",
+            false,
+        );
+        assert!(url.contains("VERSION=1.3.0"));
+        assert!(url.contains("CRS=EPSG:3857"));
+        // Mercator BBOX is x,y axis order even in 1.3.0 (projected CRSes don't flip).
+        assert!(url.contains("BBOX=-20037508"), "url was: {}", url);
+        assert!(!url.contains("&TRANSPARENT="));
+    }
+
+    #[test]
+    fn url_builder_flips_axes_for_4326_in_130() {
+        let b = SourceBehavior::for_crs(Crs::EquirectWgs84, DiscoveryMethod::DeclaredEquirect);
+        let url = build_get_map_url(
+            "https://example.com/wms",
+            "dwd:T",
+            &b,
+            "1.3.0",
+            "image/png",
+            true,
+        );
+        assert!(url.contains("CRS=EPSG:4326"));
+        // 1.3.0 + 4326: lat-first axis order. World bbox: minlat=-90, maxlat=90.
+        assert!(url.contains("BBOX=-90,-180,90,180"), "url was: {}", url);
+        assert!(url.contains("&TRANSPARENT=true"));
+    }
+
+    #[test]
+    fn url_builder_uses_srs_and_xy_axis_for_4326_in_111() {
+        let b = SourceBehavior::for_crs(Crs::EquirectWgs84, DiscoveryMethod::DeclaredEquirect);
+        let url = build_get_map_url(
+            "https://example.com/wms",
+            "legacy_layer",
+            &b,
+            "1.1.1",
+            "image/png",
+            false,
+        );
+        assert!(url.contains("VERSION=1.1.1"));
+        // 1.1.x: SRS, not CRS.
+        assert!(url.contains("SRS=EPSG:4326"));
+        // 1.1.x: always lon-first BBOX even for geographic.
+        assert!(url.contains("BBOX=-180,-90,180,90"), "url was: {}", url);
     }
 
     #[test]

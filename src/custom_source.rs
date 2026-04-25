@@ -328,6 +328,19 @@ fn create_wms_provider(source: &CustomSourceConfig) -> Result<Box<dyn LayerProvi
         "png"
     };
 
+    // Migration of the legacy `reproject_mercator: bool` field:
+    // - `true`  → force the legacy Mercator-request path (back-compat for
+    //            existing user configs and GUI-created sources where
+    //            wms_caps detected Mercator-only behaviour). Logs a
+    //            deprecation notice nudging users toward auto-discovery.
+    // - `false` (or absent) → no override, run auto-discovery via
+    //            GetCapabilities on first fetch (the new default).
+    let legacy_reproject_mercator = if wms_cfg.reproject_mercator {
+        Some(true)
+    } else {
+        None
+    };
+
     let provider = CustomWmsProvider {
         info: ProviderInfo {
             id: format!("custom:{}", source.id),
@@ -345,7 +358,7 @@ fn create_wms_provider(source: &CustomSourceConfig) -> Result<Box<dyn LayerProvi
         extension: ext.to_string(),
         uses_time: wms_cfg.uses_time,
         transparent: wms_cfg.transparent,
-        reproject_mercator: wms_cfg.reproject_mercator,
+        legacy_reproject_mercator,
         wms_version: wms_cfg.wms_version.clone(),
         headers: source.headers.clone(),
     };
@@ -359,8 +372,11 @@ fn create_wms_provider(source: &CustomSourceConfig) -> Result<Box<dyn LayerProvi
 
 /// WMS provider created from a user's custom source config.
 ///
-/// Functionally identical to the built-in WmsProvider but constructed
-/// from runtime JSON config instead of hardcoded definitions.
+/// On first fetch, runs CRS auto-discovery via GetCapabilities (in
+/// `crate::wms::resolve_behavior`) and persists the result. The legacy
+/// `reproject_mercator` flag is still accepted from JSON for backward
+/// compatibility, but its presence forces the legacy behaviour and skips
+/// auto-discovery — users are nudged to remove it via a deprecation log.
 struct CustomWmsProvider {
     info: ProviderInfo,
     base_url: String,
@@ -369,69 +385,12 @@ struct CustomWmsProvider {
     extension: String,
     uses_time: bool,
     transparent: bool,
-    reproject_mercator: bool,
+    /// If `Some`, the legacy `reproject_mercator: bool` was set in JSON and
+    /// its value is forwarded to `resolve_behavior` as a manual override.
+    /// If `None`, we run normal auto-discovery.
+    legacy_reproject_mercator: Option<bool>,
     wms_version: String,
     headers: HashMap<String, String>,
-}
-
-/// Default image resolution for custom WMS downloads.
-const DEFAULT_WIDTH: u32 = 2048;
-const DEFAULT_HEIGHT: u32 = 1024;
-
-impl CustomWmsProvider {
-    /// Returns true if using WMS 1.3.0+ (which uses CRS and geographic axis order).
-    fn is_version_130(&self) -> bool {
-        self.wms_version.starts_with("1.3")
-    }
-
-    /// Builds the WMS GetMap URL.
-    ///
-    /// Handles differences between WMS 1.1.x and 1.3.0:
-    /// - 1.1.x: SRS parameter, BBOX = minx,miny,maxx,maxy (always easting,northing)
-    /// - 1.3.0: CRS parameter, BBOX axis order depends on CRS
-    ///   (EPSG:4326 = lat,lon; EPSG:3857 = easting,northing)
-    fn build_url(&self, date: Option<&chrono::NaiveDate>) -> String {
-        let v130 = self.is_version_130();
-        let crs_param = if v130 { "CRS" } else { "SRS" };
-
-        let mut url = if self.reproject_mercator {
-            let extent = 20037508.3427892_f64;
-            format!(
-                "{}?SERVICE=WMS&VERSION={}&REQUEST=GetMap&LAYERS={}&FORMAT={}\
-                 &WIDTH={}&HEIGHT={}&{}=EPSG:3857&BBOX={},{},{},{}&STYLES=",
-                self.base_url, self.wms_version, self.layer_name, self.format,
-                DEFAULT_WIDTH, DEFAULT_WIDTH,
-                crs_param,
-                -extent, -extent, extent, extent,
-            )
-        } else if v130 {
-            // WMS 1.3.0: EPSG:4326 BBOX = minlat,minlon,maxlat,maxlon
-            format!(
-                "{}?SERVICE=WMS&VERSION={}&REQUEST=GetMap&LAYERS={}&FORMAT={}\
-                 &WIDTH={}&HEIGHT={}&CRS=EPSG:4326&BBOX=-90,-180,90,180&STYLES=",
-                self.base_url, self.wms_version, self.layer_name, self.format,
-                DEFAULT_WIDTH, DEFAULT_HEIGHT,
-            )
-        } else {
-            // WMS 1.1.x: EPSG:4326 BBOX = minlon,minlat,maxlon,maxlat
-            format!(
-                "{}?SERVICE=WMS&VERSION={}&REQUEST=GetMap&LAYERS={}&FORMAT={}\
-                 &WIDTH={}&HEIGHT={}&SRS=EPSG:4326&BBOX=-180,-90,180,90&STYLES=",
-                self.base_url, self.wms_version, self.layer_name, self.format,
-                DEFAULT_WIDTH, DEFAULT_HEIGHT,
-            )
-        };
-
-        if self.transparent {
-            url.push_str("&TRANSPARENT=true");
-        }
-
-        if let Some(d) = date {
-            url.push_str(&format!("&TIME={}", d.format("%Y-%m-%d")));
-        }
-
-        url
-    }
 }
 
 impl LayerProvider for CustomWmsProvider {
@@ -446,6 +405,17 @@ impl LayerProvider for CustomWmsProvider {
     ) -> Result<crate::provider::LayerImage, String> {
         std::fs::create_dir_all(cache_dir)
             .map_err(|e| format!("Could not create cache directory: {}", e))?;
+
+        // Resolve discovered behaviour (or legacy override). Cached on disk
+        // after first call, so subsequent fetches skip GetCapabilities.
+        let behavior = crate::wms::resolve_behavior(
+            cache_dir,
+            &self.info.id,
+            &self.base_url,
+            &self.layer_name,
+            &self.wms_version,
+            self.legacy_reproject_mercator,
+        );
 
         // Cache path
         let cached = if self.uses_time {
@@ -463,7 +433,6 @@ impl LayerProvider for CustomWmsProvider {
             ))
         };
 
-        // Cache hit?
         if cached.exists() {
             let use_cache = if self.uses_time {
                 true
@@ -475,17 +444,23 @@ impl LayerProvider for CustomWmsProvider {
                 log::info!("Custom WMS cache hit: {}", self.info.label);
                 let raw = std::fs::read(&cached)
                     .map_err(|e| format!("Cache read failed: {}", e))?;
-                let mut image = crate::wms::decode_image_pub(&raw, &self.info.label)?;
-                if self.reproject_mercator {
-                    image = crate::wms::reproject_mercator_pub(image)?;
-                }
-                return Ok(image);
+                let image = crate::wms::decode_image_pub(&raw, &self.info.label)?;
+                return crate::wms::apply_behavior_reproject(image, &behavior, &self.info.label);
             }
         }
 
-        // Download
-        let time_param = if self.uses_time { Some(date) } else { None };
-        let url = self.build_url(time_param);
+        // Build URL via the shared helper.
+        let mut url = crate::wms::behavior::build_get_map_url(
+            &self.base_url,
+            &self.layer_name,
+            &behavior,
+            &self.wms_version,
+            &self.format,
+            self.transparent,
+        );
+        if self.uses_time {
+            url.push_str(&format!("&TIME={}", date.format("%Y-%m-%d")));
+        }
         log::info!("Custom WMS download: {} → {}", self.info.label, url);
 
         let mut request = ureq::get(&url);
@@ -508,20 +483,12 @@ impl LayerProvider for CustomWmsProvider {
             bytes.len() / 1024
         );
 
-        // Cache
         if let Err(e) = std::fs::write(&cached, &bytes) {
             log::warn!("Custom WMS cache write failed: {}", e);
         }
 
-        // Decode
-        let mut image = crate::wms::decode_image_pub(&bytes, &self.info.label)?;
-
-        // Reproject if needed
-        if self.reproject_mercator {
-            image = crate::wms::reproject_mercator_pub(image)?;
-        }
-
-        Ok(image)
+        let image = crate::wms::decode_image_pub(&bytes, &self.info.label)?;
+        crate::wms::apply_behavior_reproject(image, &behavior, &self.info.label)
     }
 
     fn fetch_with_fallback(
