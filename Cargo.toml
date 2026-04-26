@@ -27,3 +27,4 @@ earcutr = "0.4"            # Polygon-Triangulation (Earcut-Algorithmus)
 rfd = "0.15"               # Native File-Dialog (Open/Save)
 sgp4 = { version = "2", features = ["serde"] }  # SGP4/SDP4 Satelliten-Propagation + OMM-Parsing
 quick-xml = "0.37"            # XML-Parsing (WMS GetCapabilities, KML, GeoRSS)
+shapefile = "0.6"             # Esri Shapefile reading (.shp/.shx/.dbf)
