@@ -43,6 +43,7 @@ use winit::window::Window;
 mod camera;
 mod crs;
 mod gibs;
+mod shp;
 mod gui;
 mod i18n;
 mod layer;
