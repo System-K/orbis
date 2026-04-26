@@ -1,7 +1,3 @@
-// Loader items are consumed by the drag-drop / file-picker wiring in the
-// next commit — the transitional dead-code lint isn't useful during the split.
-#![allow(dead_code)]
-
 // =============================================================================
 // Orbis — Shapefile Loader (Esri Shapefile / .shp + .dbf + .prj)
 // =============================================================================

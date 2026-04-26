@@ -164,10 +164,12 @@ impl GpuState {
         if self.gui_state.load_geojson_request {
             self.gui_state.load_geojson_request = false;
             if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Vector data", &["geojson", "json", "shp"])
                 .add_filter("GeoJSON", &["geojson", "json"])
+                .add_filter("Shapefile", &["shp"])
                 .pick_file()
             {
-                self.load_geojson_file(&path);
+                self.load_vector_file(&path);
                 geo_changed = true;
             }
         }
@@ -175,7 +177,7 @@ impl GpuState {
         // Drag & drop
         let dropped: Vec<_> = self.gui_state.dropped_files.drain(..).collect();
         for path in dropped {
-            self.load_geojson_file(&path);
+            self.load_vector_file(&path);
             geo_changed = true;
         }
 
@@ -205,20 +207,36 @@ impl GpuState {
         }
     }
 
-    /// Loads a GeoJSON file and adds it as a layer.
-    fn load_geojson_file(&mut self, path: &std::path::Path) {
+    /// Loads a vector file (GeoJSON or Shapefile) and adds it as a layer.
+    /// Dispatch is by file extension — every supported format produces a
+    /// `GeoLayer`, so the rest of the pipeline doesn't care which one it
+    /// came from.
+    fn load_vector_file(&mut self, path: &std::path::Path) {
         let name = path.file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed".to_string());
 
-        match geojson::load_geojson_file(path) {
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let result = match ext.as_str() {
+            "shp" => crate::shp::load_shapefile(path),
+            // Default to GeoJSON for .geojson, .json, and anything unknown
+            // (the legacy load_geojson_file emitted its own error message
+            // for files it couldn't parse, so behaviour is preserved).
+            _ => geojson::load_geojson_file(path),
+        };
+
+        match result {
             Ok(layer) => {
                 let count = layer.len();
-                log::info!("Loaded GeoJSON '{}': {} features", layer.name, count);
+                log::info!("Loaded '{}' ({}): {} features", layer.name, ext, count);
                 self.marker_system.add_layer(layer);
             }
             Err(e) => {
-                log::error!("Failed to load GeoJSON '{}': {}", name, e);
+                log::error!("Failed to load '{}' ({}): {}", name, ext, e);
             }
         }
     }
