@@ -429,6 +429,49 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                 _ => {}
             }
 
+            // --- HTTP Headers editor (M17g) ---
+            // Only meaningful for the URL-based source types: WMS, XYZ tiles,
+            // and REST/GeoJSON. Hide for Shapefile / CSV (local files, no
+            // network request to attach headers to).
+            let show_headers_editor = matches!(form.source_type_idx, 0 | 1 | 2);
+            if show_headers_editor {
+                ui.add_space(4.0);
+                ui.collapsing("HTTP Headers (Authorization, X-API-Key, …)", |ui| {
+                    ui.weak(
+                        "One header per row. Leave both fields empty or click ✖ \
+                         to remove. Examples: Authorization → Bearer abc123 ; \
+                         X-API-Key → mykey ; Referer → https://example.com",
+                    );
+                    ui.add_space(2.0);
+
+                    let mut remove_idx: Option<usize> = None;
+                    for (i, (name, value)) in form.headers.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(name)
+                                    .desired_width(140.0)
+                                    .hint_text("Header name"),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(value)
+                                    .desired_width(220.0)
+                                    .hint_text("Header value"),
+                            );
+                            if ui.small_button("✖").on_hover_text("Remove").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove_idx {
+                        form.headers.remove(i);
+                    }
+
+                    if ui.small_button("➕ Add header").clicked() {
+                        form.headers.push((String::new(), String::new()));
+                    }
+                });
+            }
+
             ui.separator();
 
             // --- Buttons ---
@@ -526,6 +569,21 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         None
                     };
 
+                    // M17g: convert the form's Vec<(name, value)> rows into
+                    // the saved HashMap. Trim names + values, drop empty-key
+                    // rows. If the same key appears twice (user edit slip),
+                    // last-write-wins matches HashMap insert semantics.
+                    let mut headers_map = std::collections::HashMap::new();
+                    if matches!(form.source_type_idx, 0 | 1 | 2) {
+                        for (name, value) in &form.headers {
+                            let n = name.trim();
+                            let v = value.trim();
+                            if !n.is_empty() {
+                                headers_map.insert(n.to_string(), v.to_string());
+                            }
+                        }
+                    }
+
                     let new_source = crate::custom_source::CustomSourceConfig {
                         id,
                         name: form.name.trim().to_string(),
@@ -534,7 +592,7 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         attribution: form.attribution.trim().to_string(),
                         default_opacity: form.opacity,
                         enabled: true,
-                        headers: std::collections::HashMap::new(),
+                        headers: headers_map,
                         wms,
                         xyz,
                         rest,

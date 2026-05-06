@@ -2,6 +2,8 @@
 // Tile Sources
 // =============================================================================
 
+use std::collections::HashMap;
+
 use super::TileCoord;
 use crate::custom_source::{CustomSourceConfig, CustomSourcesConfig, SourceType};
 
@@ -26,6 +28,11 @@ pub struct TileSource {
     pub attribution: String,
     /// Required HTTP User-Agent (some servers require identification)
     pub user_agent: Option<String>,
+    /// Extra HTTP headers to send on every tile request (Authorization,
+    /// X-API-Key, Referer, etc.). Empty for built-in sources; populated
+    /// from `CustomSourceConfig.headers` for user XYZ entries. A
+    /// `User-Agent` entry here overrides the `user_agent` field above.
+    pub headers: HashMap<String, String>,
     /// Per-source zoom offset applied by `level_for()`. Higher-resolution sources
     /// (e.g. Sentinel-2 with 10 m/px native) get a positive bias so tiles match
     /// their visual detail; coarse sources (e.g. GIBS daily imagery) use a
@@ -83,6 +90,7 @@ pub fn builtin_tile_sources() -> Vec<TileSource> {
             format: TileFormat::Jpg,
             attribution: "Sentinel-2 cloudless by EOX (CC BY-NC-SA 4.0)".into(),
             user_agent: None,
+            headers: HashMap::new(),
             recommended_zoom_bias: 1,
         },
         TileSource {
@@ -94,6 +102,7 @@ pub fn builtin_tile_sources() -> Vec<TileSource> {
             format: TileFormat::Png,
             attribution: "\u{00a9} OpenStreetMap contributors".into(),
             user_agent: Some("Orbis/0.1 (https://github.com/System-K/orbis)".into()),
+            headers: HashMap::new(),
             recommended_zoom_bias: 0,
         },
         TileSource {
@@ -105,6 +114,7 @@ pub fn builtin_tile_sources() -> Vec<TileSource> {
             format: TileFormat::Jpg,
             attribution: "NASA GIBS / ESDIS".into(),
             user_agent: None,
+            headers: HashMap::new(),
             recommended_zoom_bias: -1,
         },
     ]
@@ -188,8 +198,11 @@ pub fn tile_source_from_custom(source: &CustomSourceConfig) -> Option<TileSource
         attribution: source.attribution.clone(),
         // Conservatively spoof a User-Agent — many tile servers reject bare
         // ureq UA strings (OSM in particular). Users with private servers
-        // who need a specific UA can override by editing the config file.
+        // who need a specific UA can override by adding `User-Agent` to
+        // the source's `headers` field (which takes precedence — see the
+        // fetcher).
         user_agent: Some("Orbis/0.1 (https://github.com/System-K/orbis)".to_string()),
+        headers: source.headers.clone(),
         recommended_zoom_bias: 0,
     })
 }
@@ -445,6 +458,44 @@ mod tests {
         src.xyz.as_mut().unwrap().max_zoom = 99;
         let ts = tile_source_from_custom(&src).unwrap();
         assert_eq!(ts.max_zoom, 22);
+    }
+
+    #[test]
+    fn custom_headers_pass_through_to_tile_source() {
+        // M17g: arbitrary headers (Authorization, X-API-Key, etc.) on the
+        // CustomSourceConfig must reach the TileSource so the fetcher can
+        // apply them per-request.
+        let mut src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.png",
+            "png",
+            true,
+        );
+        src.headers
+            .insert("Authorization".to_string(), "Bearer abc123".to_string());
+        src.headers
+            .insert("X-API-Key".to_string(), "secret".to_string());
+
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert_eq!(ts.headers.get("Authorization").map(String::as_str), Some("Bearer abc123"));
+        assert_eq!(ts.headers.get("X-API-Key").map(String::as_str), Some("secret"));
+    }
+
+    #[test]
+    fn empty_custom_headers_yield_empty_map_not_default_ua() {
+        // The default User-Agent lives in the user_agent field, not in
+        // headers, so an empty headers map is the expected default.
+        let src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.png",
+            "png",
+            true,
+        );
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert!(ts.headers.is_empty());
+        assert!(ts.user_agent.is_some());
     }
 
     #[test]

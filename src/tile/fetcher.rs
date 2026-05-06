@@ -44,6 +44,13 @@ pub fn fetch_tile(
     if let Some(ua) = &source.user_agent {
         request = request.header("User-Agent", ua);
     }
+    // Per-source headers (Authorization, X-API-Key, Referer, etc.). A
+    // `User-Agent` entry here intentionally wins over the `user_agent`
+    // field above — that's the documented escape hatch for users who
+    // need a specific UA on a private server.
+    for (key, value) in &source.headers {
+        request = request.header(key.as_str(), value.as_str());
+    }
 
     let response = request
         .config()
@@ -133,6 +140,7 @@ mod tests {
             format: TileFormat::Png,
             attribution: String::new(),
             user_agent: None,
+            headers: std::collections::HashMap::new(),
             recommended_zoom_bias: 0,
         };
         let tmp = unique_tmp_dir("timeout");
