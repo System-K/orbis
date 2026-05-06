@@ -168,6 +168,7 @@ impl ApplicationHandler for App {
                     || ext == "shp"
                     || ext == "csv"
                     || ext == "tsv"
+                    || ext == "gpx"
                 {
                     log::info!("File dropped: {:?}", path);
                     gpu.gui_state.dropped_files.push(path);

@@ -29,3 +29,4 @@ sgp4 = { version = "2", features = ["serde"] }  # SGP4/SDP4 Satelliten-Propagati
 quick-xml = "0.37"            # XML-Parsing (WMS GetCapabilities, KML, GeoRSS)
 shapefile = "0.6"             # Esri Shapefile reading (.shp/.shx/.dbf)
 csv = "1.3"                   # CSV/TSV import (lat/lon point clouds)
+gpx = "0.10"                  # GPX import (waypoints, routes, tracks)

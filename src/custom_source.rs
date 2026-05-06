@@ -103,6 +103,9 @@ pub struct CustomSourceConfig {
     /// CSV config (present when type = "csv")
     #[serde(default)]
     pub csv: Option<CsvConfig>,
+    /// GPX config (present when type = "gpx")
+    #[serde(default)]
+    pub gpx: Option<GpxConfig>,
 }
 
 /// Source type discriminator.
@@ -119,6 +122,8 @@ pub enum SourceType {
     Shapefile,
     /// Local CSV/TSV file with lat/lon point coordinates
     Csv,
+    /// Local GPX file (waypoints, routes, tracks)
+    Gpx,
 }
 
 /// WMS-specific configuration.
@@ -187,6 +192,14 @@ pub struct ShapefileConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsvConfig {
     /// Absolute or relative path to the .csv file on disk.
+    pub path: String,
+}
+
+/// GPX source configuration. Points at a local .gpx file containing
+/// waypoints, routes, and/or tracks (all WGS84 by spec).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpxConfig {
+    /// Absolute or relative path to the .gpx file on disk.
     pub path: String,
 }
 
@@ -346,6 +359,11 @@ pub fn create_providers(config: &CustomSourcesConfig) -> Vec<Box<dyn LayerProvid
                 // Same lifecycle story as Shapefile — file-based, sync-loaded
                 // GeoLayer of points. Owned by CsvSourceManager.
                 log::info!("Custom CSV source '{}' registered (handled by CsvSourceManager)", source.id);
+            }
+            SourceType::Gpx => {
+                // Tracks, routes, waypoints — vector GeoLayer, file-based.
+                // Owned by GpxSourceManager.
+                log::info!("Custom GPX source '{}' registered (handled by GpxSourceManager)", source.id);
             }
         }
     }
@@ -587,6 +605,7 @@ pub fn generate_example_config() -> CustomSourcesConfig {
                 rest: None,
                 shapefile: None,
                 csv: None,
+                gpx: None,
             },
         ],
     }
@@ -768,141 +787,248 @@ fn fetch_rest_geojson(
 }
 
 // =============================================================================
-// Shapefile Source Manager
+// Local-file source manager (generic over format)
 // =============================================================================
-// Owns the lifetime of GeoLayers loaded from custom Shapefile sources. Mirrors
-// RestFeedManager's pattern but simpler: shapefiles are local files, not
-// polled URLs, so no background threads — load is synchronous on add.
+// One manager type, parameterised by a `LocalFileSourceKind`, drives all
+// file-based GeoLayer sources in custom_sources.json (Shapefile, CSV, GPX,
+// and whatever future formats follow). Lifecycle is identical across kinds:
+// load synchronously on add, drop on disable, reload when the path changes.
+// Differences are isolated to the Kind impl: source-type filter, config
+// path extraction, and loader function.
 // =============================================================================
 
-/// One shapefile source the manager has actively loaded.
-struct ActiveShapefile {
-    /// User-chosen source ID (custom_source.id, e.g. "user_world_borders").
+use std::marker::PhantomData;
+
+/// Static dispatch interface for one file-based custom source format.
+///
+/// Implementors are zero-sized marker types (e.g. `ShapefileKind`) used as
+/// the type parameter of `LocalFileSourceManager<K>`. The trait fixes
+/// every per-kind decision the manager needs.
+pub trait LocalFileSourceKind: 'static {
+    /// SourceType variant this kind represents — used by `sync_config` to
+    /// filter relevant entries from the unified `CustomSourcesConfig`.
+    fn source_type() -> SourceType;
+    /// Human-readable label for log lines ("Shapefile" / "CSV" / "GPX").
+    fn label() -> &'static str;
+    /// Extracts the kind-specific path from a source's config block.
+    /// Returns `None` for the wrong source type, missing config block, or
+    /// empty/whitespace-only paths.
+    fn config_path(source: &CustomSourceConfig) -> Option<String>;
+    /// Loads a file at `path` into a `GeoLayer`. Each format owns its own
+    /// projection handling, parsing, and validation.
+    fn load(path: &std::path::Path) -> Result<crate::geojson::GeoLayer, String>;
+}
+
+/// Internal record of a source the manager has actively loaded.
+struct ActiveLocalFileSource {
+    /// Source ID from custom_sources.json (e.g. "user_world_borders").
     id: String,
-    /// Display name — also used as the GeoLayer name. Tracking it here lets
-    /// the manager remove the right layer when the source is disabled.
+    /// Display name — also used as the GeoLayer name. Tracking here so the
+    /// manager can remove the right layer when the source is disabled.
     name: String,
-    /// Path the source pointed at when last loaded. If the user edits the
-    /// path, the manager will reload (the source-id stays the same).
+    /// Path the source pointed at when last loaded. A change in `config_path`
+    /// for the same `id` triggers reload semantics.
     loaded_from: String,
 }
 
 /// Result of one `sync_config` call.
-pub struct ShapefileSyncResult {
-    /// New GeoLayers the manager just loaded (caller adds them to MarkerSystem).
+pub struct LocalFileSyncResult {
+    /// New GeoLayers the manager just loaded (caller adds to MarkerSystem).
     pub added: Vec<crate::geojson::GeoLayer>,
-    /// Layer names whose source was removed/disabled (caller removes them
-    /// from MarkerSystem).
+    /// Layer names whose source was disabled, deleted, or had its path
+    /// changed (caller removes from MarkerSystem before applying `added`,
+    /// since path-change is remove-then-readd).
     pub removed: Vec<String>,
 }
 
-impl ShapefileSyncResult {
+impl LocalFileSyncResult {
     pub fn is_noop(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty()
     }
 }
 
-/// Loads + tracks GeoLayers from custom Shapefile sources.
-pub struct ShapefileSourceManager {
-    active: Vec<ActiveShapefile>,
+/// Owns the lifetime of GeoLayers loaded from one kind of custom file source.
+///
+/// Mirrors RestFeedManager's sync-shape but simpler: file loads are
+/// synchronous, no background threads. `sync_config` is the only mutator.
+pub struct LocalFileSourceManager<K: LocalFileSourceKind> {
+    active: Vec<ActiveLocalFileSource>,
+    _kind: PhantomData<K>,
 }
 
-impl ShapefileSourceManager {
+impl<K: LocalFileSourceKind> LocalFileSourceManager<K> {
     pub fn new() -> Self {
-        Self { active: Vec::new() }
+        Self {
+            active: Vec::new(),
+            _kind: PhantomData,
+        }
     }
 
-    /// Reconciles the manager with the current config. Returns:
-    /// - `added`:  newly-loaded GeoLayers (caller passes to MarkerSystem)
-    /// - `removed`: layer names of sources that were disabled or whose
-    ///              path changed (caller removes from MarkerSystem before
-    ///              applying `added`, since path-change is a remove+re-add)
-    pub fn sync_config(&mut self, config: &CustomSourcesConfig) -> ShapefileSyncResult {
-        // 1. Desired state: every enabled Shapefile source with a path.
-        let wanted: Vec<&CustomSourceConfig> = config
+    /// Reconciles the manager with the current config:
+    /// - sources newly enabled → loaded and returned in `added`
+    /// - sources disabled or removed → returned in `removed`
+    /// - sources with a changed path → returned in BOTH (remove + readd)
+    /// - unchanged active sources → no-op
+    ///
+    /// Failures to load are logged-and-skipped, leaving the source NOT
+    /// recorded as active so the next sync_config call retries.
+    pub fn sync_config(&mut self, config: &CustomSourcesConfig) -> LocalFileSyncResult {
+        let target = K::source_type();
+        let wanted: Vec<(&CustomSourceConfig, String)> = config
             .sources
             .iter()
-            .filter(|s| matches!(s.source_type, SourceType::Shapefile) && s.enabled)
-            .filter(|s| s.shapefile.as_ref().is_some_and(|sc| !sc.path.trim().is_empty()))
+            .filter(|s| s.source_type == target && s.enabled)
+            .filter_map(|s| K::config_path(s).map(|p| (s, p)))
             .collect();
 
-        // 2. Removals = previously active sources that are no longer wanted,
-        //    OR are still wanted but with a different path (reload semantics).
         let mut removed: Vec<String> = Vec::new();
         self.active.retain(|active| {
-            let still_wanted = wanted.iter().find(|w| w.id == active.id);
-            match still_wanted {
+            match wanted.iter().find(|(s, _)| s.id == active.id) {
                 None => {
                     removed.push(active.name.clone());
-                    false // drop
+                    false
                 }
-                Some(w) => {
-                    let new_path = w
-                        .shapefile
-                        .as_ref()
-                        .map(|sc| sc.path.trim().to_string())
-                        .unwrap_or_default();
-                    if new_path != active.loaded_from {
-                        // Path changed → remove + queue for re-add below.
-                        removed.push(active.name.clone());
-                        false
-                    } else {
-                        true // unchanged, keep
-                    }
+                Some((_, new_path)) if new_path != &active.loaded_from => {
+                    removed.push(active.name.clone());
+                    false
                 }
+                _ => true,
             }
         });
 
-        // 3. Additions = wanted sources that aren't currently active.
         let mut added: Vec<crate::geojson::GeoLayer> = Vec::new();
-        for source in &wanted {
+        for (source, path) in &wanted {
             if self.active.iter().any(|a| a.id == source.id) {
                 continue;
             }
-            let cfg = source.shapefile.as_ref().unwrap();
-            let path = std::path::Path::new(&cfg.path);
             log::info!(
-                "Shapefile source '{}': loading from {}",
+                "{} source '{}': loading from {}",
+                K::label(),
                 source.name,
-                cfg.path,
+                path,
             );
-            match crate::shp::load_shapefile(path) {
+            match K::load(std::path::Path::new(path)) {
                 Ok(mut layer) => {
-                    // Prefer the user-chosen name over the file stem.
                     layer.name = source.name.clone();
                     if !source.attribution.is_empty() {
                         layer.attribution = Some(source.attribution.clone());
                     }
-                    self.active.push(ActiveShapefile {
+                    self.active.push(ActiveLocalFileSource {
                         id: source.id.clone(),
                         name: source.name.clone(),
-                        loaded_from: cfg.path.trim().to_string(),
+                        loaded_from: path.clone(),
                     });
                     added.push(layer);
                 }
                 Err(e) => {
                     log::error!(
-                        "Shapefile source '{}' failed to load from '{}': {}",
+                        "{} source '{}' failed to load from '{}': {}",
+                        K::label(),
                         source.name,
-                        cfg.path,
+                        path,
                         e,
                     );
                 }
             }
         }
 
-        ShapefileSyncResult { added, removed }
+        LocalFileSyncResult { added, removed }
     }
 }
 
-impl Default for ShapefileSourceManager {
+impl<K: LocalFileSourceKind> Default for LocalFileSourceManager<K> {
     fn default() -> Self {
         Self::new()
     }
 }
 
+// =============================================================================
+// Per-kind impls
+// =============================================================================
+
+/// Marker type for Shapefile sources (.shp + sidecars).
+pub struct ShapefileKind;
+
+impl LocalFileSourceKind for ShapefileKind {
+    fn source_type() -> SourceType {
+        SourceType::Shapefile
+    }
+    fn label() -> &'static str {
+        "Shapefile"
+    }
+    fn config_path(source: &CustomSourceConfig) -> Option<String> {
+        source
+            .shapefile
+            .as_ref()
+            .map(|c| c.path.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    fn load(path: &std::path::Path) -> Result<crate::geojson::GeoLayer, String> {
+        crate::shp::load_shapefile(path)
+    }
+}
+
+/// Marker type for CSV/TSV point-cloud sources.
+pub struct CsvKind;
+
+impl LocalFileSourceKind for CsvKind {
+    fn source_type() -> SourceType {
+        SourceType::Csv
+    }
+    fn label() -> &'static str {
+        "CSV"
+    }
+    fn config_path(source: &CustomSourceConfig) -> Option<String> {
+        source
+            .csv
+            .as_ref()
+            .map(|c| c.path.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    fn load(path: &std::path::Path) -> Result<crate::geojson::GeoLayer, String> {
+        crate::csv_import::load_csv_file(path)
+    }
+}
+
+/// Marker type for GPX track / route / waypoint sources.
+pub struct GpxKind;
+
+impl LocalFileSourceKind for GpxKind {
+    fn source_type() -> SourceType {
+        SourceType::Gpx
+    }
+    fn label() -> &'static str {
+        "GPX"
+    }
+    fn config_path(source: &CustomSourceConfig) -> Option<String> {
+        source
+            .gpx
+            .as_ref()
+            .map(|c| c.path.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    fn load(path: &std::path::Path) -> Result<crate::geojson::GeoLayer, String> {
+        crate::gpx_import::load_gpx_file(path)
+    }
+}
+
+// =============================================================================
+// Type aliases — preserve existing call sites across the codebase
+// =============================================================================
+
+pub type ShapefileSourceManager = LocalFileSourceManager<ShapefileKind>;
+pub type CsvSourceManager = LocalFileSourceManager<CsvKind>;
+pub type GpxSourceManager = LocalFileSourceManager<GpxKind>;
+
+#[allow(dead_code)] // legacy alias — callers may use the generic name directly
+pub type ShapefileSyncResult = LocalFileSyncResult;
+#[allow(dead_code)]
+pub type CsvSyncResult = LocalFileSyncResult;
+#[allow(dead_code)]
+pub type GpxSyncResult = LocalFileSyncResult;
+
 #[cfg(test)]
-mod shapefile_manager_tests {
+mod local_file_manager_tests {
     use super::*;
 
     fn cfg_with(sources: Vec<CustomSourceConfig>) -> CustomSourcesConfig {
@@ -924,30 +1050,30 @@ mod shapefile_manager_tests {
             rest: None,
             shapefile: Some(ShapefileConfig { path: path.to_string() }),
             csv: None,
+            gpx: None,
         }
     }
 
+    // Tests run against ShapefileKind because the algorithm is the same for
+    // every kind — verifying once with a concrete kind covers the generic.
+    type Mgr = LocalFileSourceManager<ShapefileKind>;
+
     #[test]
     fn empty_config_is_noop() {
-        let mut mgr = ShapefileSourceManager::new();
-        let r = mgr.sync_config(&cfg_with(vec![]));
-        assert!(r.is_noop());
+        let mut mgr = Mgr::new();
+        assert!(mgr.sync_config(&cfg_with(vec![])).is_noop());
     }
 
     #[test]
     fn missing_path_does_not_attempt_load() {
-        // A source with an empty path is filtered before load_shapefile is
-        // called — would produce a useless error otherwise.
-        let mut mgr = ShapefileSourceManager::new();
+        let mut mgr = Mgr::new();
         let r = mgr.sync_config(&cfg_with(vec![shp_source("user_x", "", true)]));
         assert!(r.is_noop());
     }
 
     #[test]
     fn nonexistent_path_logs_and_skips() {
-        // Unloadable file → error logged, no layer added, manager doesn't
-        // record it as active so a retry on next sync_config will try again.
-        let mut mgr = ShapefileSourceManager::new();
+        let mut mgr = Mgr::new();
         let r = mgr.sync_config(&cfg_with(vec![shp_source(
             "user_x",
             "/no/such/file.shp",
@@ -967,19 +1093,16 @@ mod shapefile_manager_tests {
 
     #[test]
     fn disabling_source_emits_removal() {
-        // Set up a fake "active" entry by hand (shortcut around needing a
-        // real shapefile on disk for this test).
-        let mut mgr = ShapefileSourceManager::new();
-        mgr.active.push(ActiveShapefile {
+        let mut mgr = Mgr::new();
+        mgr.active.push(ActiveLocalFileSource {
             id: "user_x".to_string(),
             name: "user_x".to_string(),
             loaded_from: "/some/path.shp".to_string(),
         });
-
         let r = mgr.sync_config(&cfg_with(vec![shp_source(
             "user_x",
             "/some/path.shp",
-            false, // disabled
+            false,
         )]));
         assert_eq!(r.removed, vec!["user_x".to_string()]);
         assert!(mgr.active.is_empty());
@@ -987,17 +1110,12 @@ mod shapefile_manager_tests {
 
     #[test]
     fn path_change_triggers_remove_then_readd_attempt() {
-        // Active entry with old path; config now has same id but new path.
-        // Expect the old layer to be removed (and re-add will be attempted,
-        // failing here since the file doesn't exist — but that's the
-        // load_shapefile failure path, not the manager's responsibility).
-        let mut mgr = ShapefileSourceManager::new();
-        mgr.active.push(ActiveShapefile {
+        let mut mgr = Mgr::new();
+        mgr.active.push(ActiveLocalFileSource {
             id: "user_x".to_string(),
             name: "user_x".to_string(),
             loaded_from: "/old/path.shp".to_string(),
         });
-
         let r = mgr.sync_config(&cfg_with(vec![shp_source(
             "user_x",
             "/new/path.shp",
@@ -1009,13 +1127,12 @@ mod shapefile_manager_tests {
 
     #[test]
     fn unchanged_active_source_is_skipped() {
-        let mut mgr = ShapefileSourceManager::new();
-        mgr.active.push(ActiveShapefile {
+        let mut mgr = Mgr::new();
+        mgr.active.push(ActiveLocalFileSource {
             id: "user_x".to_string(),
             name: "user_x".to_string(),
             loaded_from: "/some/path.shp".to_string(),
         });
-
         let r = mgr.sync_config(&cfg_with(vec![shp_source(
             "user_x",
             "/some/path.shp",
@@ -1024,223 +1141,51 @@ mod shapefile_manager_tests {
         assert!(r.is_noop());
         assert_eq!(mgr.active.len(), 1);
     }
-}
 
-// =============================================================================
-// CSV Source Manager
-// =============================================================================
-// Same lifecycle shape as ShapefileSourceManager: local file, synchronous
-// load, no polling. Cloned rather than generalised over a `LocalFileSourceKind`
-// trait — when a third file format lands (KML?), it's worth pulling both
-// into a generic. Two parallel copies of ~80 lines is cheaper than premature
-// abstraction for now.
-// =============================================================================
+    // Per-kind smoke tests — verify the Kind impl wires the right config
+    // field and source-type to the generic algorithm.
 
-struct ActiveCsvSource {
-    id: String,
-    name: String,
-    loaded_from: String,
-}
-
-pub struct CsvSyncResult {
-    pub added: Vec<crate::geojson::GeoLayer>,
-    pub removed: Vec<String>,
-}
-
-impl CsvSyncResult {
-    pub fn is_noop(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty()
-    }
-}
-
-pub struct CsvSourceManager {
-    active: Vec<ActiveCsvSource>,
-}
-
-impl CsvSourceManager {
-    pub fn new() -> Self {
-        Self { active: Vec::new() }
-    }
-
-    /// Reconciles the manager with the current config — same contract as
-    /// `ShapefileSourceManager::sync_config`.
-    pub fn sync_config(&mut self, config: &CustomSourcesConfig) -> CsvSyncResult {
-        let wanted: Vec<&CustomSourceConfig> = config
-            .sources
-            .iter()
-            .filter(|s| matches!(s.source_type, SourceType::Csv) && s.enabled)
-            .filter(|s| s.csv.as_ref().is_some_and(|cc| !cc.path.trim().is_empty()))
-            .collect();
-
-        let mut removed: Vec<String> = Vec::new();
-        self.active.retain(|active| {
-            let still_wanted = wanted.iter().find(|w| w.id == active.id);
-            match still_wanted {
-                None => {
-                    removed.push(active.name.clone());
-                    false
-                }
-                Some(w) => {
-                    let new_path = w
-                        .csv
-                        .as_ref()
-                        .map(|cc| cc.path.trim().to_string())
-                        .unwrap_or_default();
-                    if new_path != active.loaded_from {
-                        removed.push(active.name.clone());
-                        false
-                    } else {
-                        true
-                    }
-                }
-            }
-        });
-
-        let mut added: Vec<crate::geojson::GeoLayer> = Vec::new();
-        for source in &wanted {
-            if self.active.iter().any(|a| a.id == source.id) {
-                continue;
-            }
-            let cfg = source.csv.as_ref().unwrap();
-            let path = std::path::Path::new(&cfg.path);
-            log::info!(
-                "CSV source '{}': loading from {}",
-                source.name,
-                cfg.path,
-            );
-            match crate::csv_import::load_csv_file(path) {
-                Ok(mut layer) => {
-                    layer.name = source.name.clone();
-                    if !source.attribution.is_empty() {
-                        layer.attribution = Some(source.attribution.clone());
-                    }
-                    self.active.push(ActiveCsvSource {
-                        id: source.id.clone(),
-                        name: source.name.clone(),
-                        loaded_from: cfg.path.trim().to_string(),
-                    });
-                    added.push(layer);
-                }
-                Err(e) => {
-                    log::error!(
-                        "CSV source '{}' failed to load from '{}': {}",
-                        source.name,
-                        cfg.path,
-                        e,
-                    );
-                }
-            }
-        }
-
-        CsvSyncResult { added, removed }
-    }
-}
-
-impl Default for CsvSourceManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-mod csv_manager_tests {
-    use super::*;
-
-    fn cfg_with(sources: Vec<CustomSourceConfig>) -> CustomSourcesConfig {
-        CustomSourcesConfig { version: 1, sources }
-    }
-
-    fn csv_source(id: &str, path: &str, enabled: bool) -> CustomSourceConfig {
-        CustomSourceConfig {
-            id: id.to_string(),
-            name: id.to_string(),
-            source_type: SourceType::Csv,
-            category: "basemap".to_string(),
-            attribution: String::new(),
-            default_opacity: 0.5,
-            enabled,
-            headers: HashMap::new(),
-            wms: None,
-            xyz: None,
-            rest: None,
-            shapefile: None,
-            csv: Some(CsvConfig { path: path.to_string() }),
-        }
+    #[test]
+    fn shapefile_kind_extracts_shp_path_only() {
+        let mut s = shp_source("x", "/p.shp", true);
+        assert_eq!(ShapefileKind::config_path(&s), Some("/p.shp".to_string()));
+        // CSV config on a Shapefile source-type does not affect extraction.
+        s.csv = Some(CsvConfig { path: "/p.csv".to_string() });
+        assert_eq!(ShapefileKind::config_path(&s), Some("/p.shp".to_string()));
     }
 
     #[test]
-    fn empty_config_is_noop() {
-        let mut mgr = CsvSourceManager::new();
-        assert!(mgr.sync_config(&cfg_with(vec![])).is_noop());
+    fn csv_kind_extracts_csv_path_only() {
+        let mut s = shp_source("x", "/p.shp", true);
+        s.source_type = SourceType::Csv;
+        s.csv = Some(CsvConfig { path: "/p.csv".to_string() });
+        assert_eq!(CsvKind::config_path(&s), Some("/p.csv".to_string()));
     }
 
     #[test]
-    fn missing_path_does_not_attempt_load() {
-        let mut mgr = CsvSourceManager::new();
-        let r = mgr.sync_config(&cfg_with(vec![csv_source("user_x", "", true)]));
+    fn gpx_kind_extracts_gpx_path_only() {
+        let mut s = shp_source("x", "/p.shp", true);
+        s.source_type = SourceType::Gpx;
+        s.gpx = Some(GpxConfig { path: "/p.gpx".to_string() });
+        assert_eq!(GpxKind::config_path(&s), Some("/p.gpx".to_string()));
+    }
+
+    #[test]
+    fn kind_filters_by_source_type() {
+        // A Shapefile source must not be picked up by the CsvKind manager
+        // even if it happens to have a csv block populated.
+        let mut s = shp_source("x", "/p.shp", true);
+        s.csv = Some(CsvConfig { path: "/p.csv".to_string() });
+        let mut csv_mgr: LocalFileSourceManager<CsvKind> = LocalFileSourceManager::new();
+        let r = csv_mgr.sync_config(&cfg_with(vec![s]));
         assert!(r.is_noop());
     }
 
     #[test]
-    fn nonexistent_path_logs_and_skips() {
-        let mut mgr = CsvSourceManager::new();
-        let r = mgr.sync_config(&cfg_with(vec![csv_source(
-            "user_x",
-            "/no/such/file.csv",
-            true,
-        )]));
-        assert!(r.added.is_empty());
-        assert!(mgr.active.is_empty());
-    }
-
-    #[test]
-    fn disabling_source_emits_removal() {
-        let mut mgr = CsvSourceManager::new();
-        mgr.active.push(ActiveCsvSource {
-            id: "user_x".to_string(),
-            name: "user_x".to_string(),
-            loaded_from: "/some/path.csv".to_string(),
-        });
-        let r = mgr.sync_config(&cfg_with(vec![csv_source(
-            "user_x",
-            "/some/path.csv",
-            false,
-        )]));
-        assert_eq!(r.removed, vec!["user_x".to_string()]);
-        assert!(mgr.active.is_empty());
-    }
-
-    #[test]
-    fn path_change_triggers_remove_then_readd_attempt() {
-        let mut mgr = CsvSourceManager::new();
-        mgr.active.push(ActiveCsvSource {
-            id: "user_x".to_string(),
-            name: "user_x".to_string(),
-            loaded_from: "/old/path.csv".to_string(),
-        });
-        let r = mgr.sync_config(&cfg_with(vec![csv_source(
-            "user_x",
-            "/new/path.csv",
-            true,
-        )]));
-        assert_eq!(r.removed, vec!["user_x".to_string()]);
-        assert!(mgr.active.is_empty());
-    }
-
-    #[test]
-    fn unchanged_active_source_is_skipped() {
-        let mut mgr = CsvSourceManager::new();
-        mgr.active.push(ActiveCsvSource {
-            id: "user_x".to_string(),
-            name: "user_x".to_string(),
-            loaded_from: "/some/path.csv".to_string(),
-        });
-        let r = mgr.sync_config(&cfg_with(vec![csv_source(
-            "user_x",
-            "/some/path.csv",
-            true,
-        )]));
-        assert!(r.is_noop());
-        assert_eq!(mgr.active.len(), 1);
+    fn source_type_constants_match_kinds() {
+        assert_eq!(ShapefileKind::source_type(), SourceType::Shapefile);
+        assert_eq!(CsvKind::source_type(), SourceType::Csv);
+        assert_eq!(GpxKind::source_type(), SourceType::Gpx);
     }
 }
+

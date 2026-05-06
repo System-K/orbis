@@ -306,6 +306,7 @@ mod tests {
             rest: None,
             shapefile: None,
             csv: None,
+            gpx: None,
         }
     }
 

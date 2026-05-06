@@ -26,6 +26,7 @@ pub(super) fn draw_custom_sources_panel(ui: &mut egui::Ui, gui_state: &mut GuiSt
                         crate::custom_source::SourceType::Rest => "REST",
                         crate::custom_source::SourceType::Shapefile => "SHP",
                         crate::custom_source::SourceType::Csv => "CSV",
+                        crate::custom_source::SourceType::Gpx => "GPX",
                     };
                     ui.label(format!("[{}] {}", type_tag, src.name));
 
@@ -426,13 +427,42 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                          properties.",
                     );
                 }
+                5 => {
+                    // GPX
+                    ui.strong("GPX Configuration");
+                    ui.add_space(2.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("File:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.gpx_path)
+                                .desired_width(220.0)
+                                .hint_text("/path/to/track.gpx"),
+                        );
+                        if ui.small_button("📂 Browse...").clicked() {
+                            if let Some(picked) = rfd::FileDialog::new()
+                                .add_filter("GPX", &["gpx"])
+                                .pick_file()
+                            {
+                                form.gpx_path = picked.to_string_lossy().to_string();
+                            }
+                        }
+                    });
+
+                    ui.weak(
+                        "Loads waypoints (<wpt>) as point markers, routes (<rte>) \
+                         and tracks (<trk> + <trkseg>) as lines. Names go to \
+                         labels; descriptions and elevation/time/source land in \
+                         feature properties. GPX is always WGS84.",
+                    );
+                }
                 _ => {}
             }
 
             // --- HTTP Headers editor (M17g) ---
             // Only meaningful for the URL-based source types: WMS, XYZ tiles,
-            // and REST/GeoJSON. Hide for Shapefile / CSV (local files, no
-            // network request to attach headers to).
+            // and REST/GeoJSON. Hide for Shapefile / CSV / GPX (local files,
+            // no network request to attach headers to).
             let show_headers_editor = matches!(form.source_type_idx, 0 | 1 | 2);
             if show_headers_editor {
                 ui.add_space(4.0);
@@ -484,6 +514,7 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         2 => !form.rest_url.trim().is_empty(),
                         3 => !form.shp_path.trim().is_empty(),
                         4 => !form.csv_path.trim().is_empty(),
+                        5 => !form.gpx_path.trim().is_empty(),
                         _ => false,
                     };
 
@@ -505,7 +536,8 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         1 => crate::custom_source::SourceType::Xyz,
                         2 => crate::custom_source::SourceType::Rest,
                         3 => crate::custom_source::SourceType::Shapefile,
-                        _ => crate::custom_source::SourceType::Csv,
+                        4 => crate::custom_source::SourceType::Csv,
+                        _ => crate::custom_source::SourceType::Gpx,
                     };
 
                     let wms = if form.source_type_idx == 0 {
@@ -569,6 +601,14 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         None
                     };
 
+                    let gpx_cfg = if form.source_type_idx == 5 {
+                        Some(crate::custom_source::GpxConfig {
+                            path: form.gpx_path.trim().to_string(),
+                        })
+                    } else {
+                        None
+                    };
+
                     // M17g: convert the form's Vec<(name, value)> rows into
                     // the saved HashMap. Trim names + values, drop empty-key
                     // rows. If the same key appears twice (user edit slip),
@@ -598,6 +638,7 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         rest,
                         shapefile: shp_cfg,
                         csv: csv_cfg,
+                        gpx: gpx_cfg,
                     };
 
                     gui_state.custom_sources_config.sources.push(new_source);

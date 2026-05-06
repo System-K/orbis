@@ -653,6 +653,13 @@ impl crate::GpuState {
             marker_system.add_layer(layer);
         }
 
+        // M17i (GPX flavour): same dance for GPX sources.
+        let mut gpx_source_manager = custom_source::GpxSourceManager::new();
+        let gpx_sync = gpx_source_manager.sync_config(&gui_state.custom_sources_config);
+        for layer in gpx_sync.added {
+            marker_system.add_layer(layer);
+        }
+
         // Rebuild geometry buffers from loaded layers
         polygon_system.rebuild_from_layers(marker_system.geo_layers(), &device);
         line_system.rebuild_from_layers(
@@ -742,6 +749,7 @@ impl crate::GpuState {
             rest_feed_manager,
             shapefile_source_manager,
             csv_source_manager,
+            gpx_source_manager,
             satellite_tracker: {
                 let mut tracker = satellite::SatelliteTracker::new();
                 tracker.request_refresh(); // start downloading OMMs at startup

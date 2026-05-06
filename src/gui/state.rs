@@ -50,6 +50,8 @@ pub struct CustomSourceForm {
     pub shp_path: String,
     // --- CSV fields (M17i) ---
     pub csv_path: String,
+    // --- GPX fields (M17i, GPX flavour) ---
+    pub gpx_path: String,
     // --- HTTP headers editor (M17g, applies to WMS/XYZ/REST) ---
     /// Vec rather than HashMap for stable row ordering in the UI; converted
     /// to HashMap on save (empty-key rows dropped).
@@ -79,6 +81,7 @@ impl Default for CustomSourceForm {
             rest_refresh_secs: 300,
             shp_path: String::new(),
             csv_path: String::new(),
+            gpx_path: String::new(),
             headers: Vec::new(),
         }
     }
@@ -98,7 +101,7 @@ pub const SOURCE_CATEGORIES: &[(&str, &str)] = &[
 ];
 
 /// Source type labels for the combo box.
-pub const SOURCE_TYPES: &[&str] = &["WMS", "XYZ Tiles", "REST/GeoJSON", "Shapefile", "CSV"];
+pub const SOURCE_TYPES: &[&str] = &["WMS", "XYZ Tiles", "REST/GeoJSON", "Shapefile", "CSV", "GPX"];
 
 /// Data that the GUI can display and modify.
 pub struct GuiState {
