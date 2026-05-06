@@ -46,6 +46,8 @@ pub struct CustomSourceForm {
     // --- REST fields (M17d) ---
     pub rest_url: String,
     pub rest_refresh_secs: u64,
+    // --- Shapefile fields (M17h) ---
+    pub shp_path: String,
 }
 
 impl Default for CustomSourceForm {
@@ -69,6 +71,7 @@ impl Default for CustomSourceForm {
             xyz_max_zoom: 18,
             rest_url: String::new(),
             rest_refresh_secs: 300,
+            shp_path: String::new(),
         }
     }
 }
@@ -87,7 +90,7 @@ pub const SOURCE_CATEGORIES: &[(&str, &str)] = &[
 ];
 
 /// Source type labels for the combo box.
-pub const SOURCE_TYPES: &[&str] = &["WMS", "XYZ Tiles", "REST/GeoJSON"];
+pub const SOURCE_TYPES: &[&str] = &["WMS", "XYZ Tiles", "REST/GeoJSON", "Shapefile"];
 
 /// Data that the GUI can display and modify.
 pub struct GuiState {

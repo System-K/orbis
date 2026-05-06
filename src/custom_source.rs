@@ -97,6 +97,9 @@ pub struct CustomSourceConfig {
     /// REST/GeoJSON config (present when type = "rest")
     #[serde(default)]
     pub rest: Option<RestConfig>,
+    /// Shapefile config (present when type = "shapefile")
+    #[serde(default)]
+    pub shapefile: Option<ShapefileConfig>,
 }
 
 /// Source type discriminator.
@@ -109,6 +112,8 @@ pub enum SourceType {
     Xyz,
     /// REST API returning GeoJSON — fetches point/line/polygon data
     Rest,
+    /// Local Esri Shapefile bundle (.shp + .shx + .dbf + optional .prj)
+    Shapefile,
 }
 
 /// WMS-specific configuration.
@@ -162,6 +167,14 @@ pub struct RestConfig {
     /// Expected response format
     #[serde(default = "default_geojson")]
     pub response_format: String,
+}
+
+/// Shapefile source configuration. Points at a local .shp file; the loader
+/// reads the matching .shx/.dbf/.prj sidecars from the same directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShapefileConfig {
+    /// Absolute or relative path to the .shp file on disk.
+    pub path: String,
 }
 
 // --- Serde defaults ---
@@ -310,6 +323,11 @@ pub fn create_providers(config: &CustomSourcesConfig) -> Vec<Box<dyn LayerProvid
             SourceType::Rest => {
                 // REST sources are handled by RestFeedManager, not the provider catalog.
                 log::info!("Custom REST source '{}' registered (handled by RestFeedManager)", source.id);
+            }
+            SourceType::Shapefile => {
+                // Shapefiles produce vector GeoLayers, not raster providers.
+                // Loaded by ShapefileSourceManager → marker_system.
+                log::info!("Custom Shapefile source '{}' registered (handled by ShapefileSourceManager)", source.id);
             }
         }
     }
@@ -549,6 +567,7 @@ pub fn generate_example_config() -> CustomSourcesConfig {
                 }),
                 xyz: None,
                 rest: None,
+                shapefile: None,
             },
         ],
     }
@@ -727,4 +746,262 @@ fn fetch_rest_geojson(
     }
 
     Ok(layer)
+}
+
+// =============================================================================
+// Shapefile Source Manager
+// =============================================================================
+// Owns the lifetime of GeoLayers loaded from custom Shapefile sources. Mirrors
+// RestFeedManager's pattern but simpler: shapefiles are local files, not
+// polled URLs, so no background threads — load is synchronous on add.
+// =============================================================================
+
+/// One shapefile source the manager has actively loaded.
+struct ActiveShapefile {
+    /// User-chosen source ID (custom_source.id, e.g. "user_world_borders").
+    id: String,
+    /// Display name — also used as the GeoLayer name. Tracking it here lets
+    /// the manager remove the right layer when the source is disabled.
+    name: String,
+    /// Path the source pointed at when last loaded. If the user edits the
+    /// path, the manager will reload (the source-id stays the same).
+    loaded_from: String,
+}
+
+/// Result of one `sync_config` call.
+pub struct ShapefileSyncResult {
+    /// New GeoLayers the manager just loaded (caller adds them to MarkerSystem).
+    pub added: Vec<crate::geojson::GeoLayer>,
+    /// Layer names whose source was removed/disabled (caller removes them
+    /// from MarkerSystem).
+    pub removed: Vec<String>,
+}
+
+impl ShapefileSyncResult {
+    pub fn is_noop(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// Loads + tracks GeoLayers from custom Shapefile sources.
+pub struct ShapefileSourceManager {
+    active: Vec<ActiveShapefile>,
+}
+
+impl ShapefileSourceManager {
+    pub fn new() -> Self {
+        Self { active: Vec::new() }
+    }
+
+    /// Reconciles the manager with the current config. Returns:
+    /// - `added`:  newly-loaded GeoLayers (caller passes to MarkerSystem)
+    /// - `removed`: layer names of sources that were disabled or whose
+    ///              path changed (caller removes from MarkerSystem before
+    ///              applying `added`, since path-change is a remove+re-add)
+    pub fn sync_config(&mut self, config: &CustomSourcesConfig) -> ShapefileSyncResult {
+        // 1. Desired state: every enabled Shapefile source with a path.
+        let wanted: Vec<&CustomSourceConfig> = config
+            .sources
+            .iter()
+            .filter(|s| matches!(s.source_type, SourceType::Shapefile) && s.enabled)
+            .filter(|s| s.shapefile.as_ref().is_some_and(|sc| !sc.path.trim().is_empty()))
+            .collect();
+
+        // 2. Removals = previously active sources that are no longer wanted,
+        //    OR are still wanted but with a different path (reload semantics).
+        let mut removed: Vec<String> = Vec::new();
+        self.active.retain(|active| {
+            let still_wanted = wanted.iter().find(|w| w.id == active.id);
+            match still_wanted {
+                None => {
+                    removed.push(active.name.clone());
+                    false // drop
+                }
+                Some(w) => {
+                    let new_path = w
+                        .shapefile
+                        .as_ref()
+                        .map(|sc| sc.path.trim().to_string())
+                        .unwrap_or_default();
+                    if new_path != active.loaded_from {
+                        // Path changed → remove + queue for re-add below.
+                        removed.push(active.name.clone());
+                        false
+                    } else {
+                        true // unchanged, keep
+                    }
+                }
+            }
+        });
+
+        // 3. Additions = wanted sources that aren't currently active.
+        let mut added: Vec<crate::geojson::GeoLayer> = Vec::new();
+        for source in &wanted {
+            if self.active.iter().any(|a| a.id == source.id) {
+                continue;
+            }
+            let cfg = source.shapefile.as_ref().unwrap();
+            let path = std::path::Path::new(&cfg.path);
+            log::info!(
+                "Shapefile source '{}': loading from {}",
+                source.name,
+                cfg.path,
+            );
+            match crate::shp::load_shapefile(path) {
+                Ok(mut layer) => {
+                    // Prefer the user-chosen name over the file stem.
+                    layer.name = source.name.clone();
+                    if !source.attribution.is_empty() {
+                        layer.attribution = Some(source.attribution.clone());
+                    }
+                    self.active.push(ActiveShapefile {
+                        id: source.id.clone(),
+                        name: source.name.clone(),
+                        loaded_from: cfg.path.trim().to_string(),
+                    });
+                    added.push(layer);
+                }
+                Err(e) => {
+                    log::error!(
+                        "Shapefile source '{}' failed to load from '{}': {}",
+                        source.name,
+                        cfg.path,
+                        e,
+                    );
+                }
+            }
+        }
+
+        ShapefileSyncResult { added, removed }
+    }
+}
+
+impl Default for ShapefileSourceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod shapefile_manager_tests {
+    use super::*;
+
+    fn cfg_with(sources: Vec<CustomSourceConfig>) -> CustomSourcesConfig {
+        CustomSourcesConfig { version: 1, sources }
+    }
+
+    fn shp_source(id: &str, path: &str, enabled: bool) -> CustomSourceConfig {
+        CustomSourceConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            source_type: SourceType::Shapefile,
+            category: "basemap".to_string(),
+            attribution: String::new(),
+            default_opacity: 0.5,
+            enabled,
+            headers: HashMap::new(),
+            wms: None,
+            xyz: None,
+            rest: None,
+            shapefile: Some(ShapefileConfig { path: path.to_string() }),
+        }
+    }
+
+    #[test]
+    fn empty_config_is_noop() {
+        let mut mgr = ShapefileSourceManager::new();
+        let r = mgr.sync_config(&cfg_with(vec![]));
+        assert!(r.is_noop());
+    }
+
+    #[test]
+    fn missing_path_does_not_attempt_load() {
+        // A source with an empty path is filtered before load_shapefile is
+        // called — would produce a useless error otherwise.
+        let mut mgr = ShapefileSourceManager::new();
+        let r = mgr.sync_config(&cfg_with(vec![shp_source("user_x", "", true)]));
+        assert!(r.is_noop());
+    }
+
+    #[test]
+    fn nonexistent_path_logs_and_skips() {
+        // Unloadable file → error logged, no layer added, manager doesn't
+        // record it as active so a retry on next sync_config will try again.
+        let mut mgr = ShapefileSourceManager::new();
+        let r = mgr.sync_config(&cfg_with(vec![shp_source(
+            "user_x",
+            "/no/such/file.shp",
+            true,
+        )]));
+        assert!(r.added.is_empty());
+        assert!(mgr.active.is_empty());
+
+        // Re-syncing should attempt again, not silently skip.
+        let r2 = mgr.sync_config(&cfg_with(vec![shp_source(
+            "user_x",
+            "/no/such/file.shp",
+            true,
+        )]));
+        assert!(r2.added.is_empty());
+    }
+
+    #[test]
+    fn disabling_source_emits_removal() {
+        // Set up a fake "active" entry by hand (shortcut around needing a
+        // real shapefile on disk for this test).
+        let mut mgr = ShapefileSourceManager::new();
+        mgr.active.push(ActiveShapefile {
+            id: "user_x".to_string(),
+            name: "user_x".to_string(),
+            loaded_from: "/some/path.shp".to_string(),
+        });
+
+        let r = mgr.sync_config(&cfg_with(vec![shp_source(
+            "user_x",
+            "/some/path.shp",
+            false, // disabled
+        )]));
+        assert_eq!(r.removed, vec!["user_x".to_string()]);
+        assert!(mgr.active.is_empty());
+    }
+
+    #[test]
+    fn path_change_triggers_remove_then_readd_attempt() {
+        // Active entry with old path; config now has same id but new path.
+        // Expect the old layer to be removed (and re-add will be attempted,
+        // failing here since the file doesn't exist — but that's the
+        // load_shapefile failure path, not the manager's responsibility).
+        let mut mgr = ShapefileSourceManager::new();
+        mgr.active.push(ActiveShapefile {
+            id: "user_x".to_string(),
+            name: "user_x".to_string(),
+            loaded_from: "/old/path.shp".to_string(),
+        });
+
+        let r = mgr.sync_config(&cfg_with(vec![shp_source(
+            "user_x",
+            "/new/path.shp",
+            true,
+        )]));
+        assert_eq!(r.removed, vec!["user_x".to_string()]);
+        assert!(mgr.active.is_empty());
+    }
+
+    #[test]
+    fn unchanged_active_source_is_skipped() {
+        let mut mgr = ShapefileSourceManager::new();
+        mgr.active.push(ActiveShapefile {
+            id: "user_x".to_string(),
+            name: "user_x".to_string(),
+            loaded_from: "/some/path.shp".to_string(),
+        });
+
+        let r = mgr.sync_config(&cfg_with(vec![shp_source(
+            "user_x",
+            "/some/path.shp",
+            true,
+        )]));
+        assert!(r.is_noop());
+        assert_eq!(mgr.active.len(), 1);
+    }
 }

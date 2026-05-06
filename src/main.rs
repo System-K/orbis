@@ -168,6 +168,8 @@ pub(crate) struct GpuState {
     pub(crate) live_source_manager: live_source::LiveSourceManager,
     // M17d: Custom REST/GeoJSON feed polling
     pub(crate) rest_feed_manager: custom_source::RestFeedManager,
+    // M17h: Custom Shapefile sources (file-based, loaded once per add)
+    pub(crate) shapefile_source_manager: custom_source::ShapefileSourceManager,
     pub(crate) satellite_tracker: satellite::SatelliteTracker,
 
     /// M16 Phase 4: Single owner of cache, worker pool, compositor, state.

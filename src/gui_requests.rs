@@ -144,7 +144,22 @@ impl GpuState {
                     log::info!("Removed GeoLayer for deactivated REST feed '{}'", name);
                 }
             }
-            if !removed_feeds.is_empty() {
+
+            // M17h: Sync Shapefile source manager — load new sources, drop
+            // deactivated ones, reload sources whose path changed.
+            let shp_sync = self.shapefile_source_manager.sync_config(&self.gui_state.custom_sources_config);
+            let shp_changed = !shp_sync.is_noop();
+            for name in &shp_sync.removed {
+                if self.marker_system.remove_layer(name) {
+                    log::info!("Removed GeoLayer for deactivated Shapefile '{}'", name);
+                }
+            }
+            for layer in shp_sync.added {
+                log::info!("Added GeoLayer from Shapefile source '{}'", layer.name);
+                self.marker_system.add_layer(layer);
+            }
+
+            if !removed_feeds.is_empty() || shp_changed {
                 self.polygon_system.rebuild_from_layers(
                     self.marker_system.geo_layers(), &self.device,
                 );

@@ -24,6 +24,7 @@ pub(super) fn draw_custom_sources_panel(ui: &mut egui::Ui, gui_state: &mut GuiSt
                         crate::custom_source::SourceType::Wms => "WMS",
                         crate::custom_source::SourceType::Xyz => "XYZ",
                         crate::custom_source::SourceType::Rest => "REST",
+                        crate::custom_source::SourceType::Shapefile => "SHP",
                     };
                     ui.label(format!("[{}] {}", type_tag, src.name));
 
@@ -362,6 +363,34 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
 
                     ui.weak("Not yet implemented (M17d)");
                 }
+                3 => {
+                    // Shapefile
+                    ui.strong("Shapefile Configuration");
+                    ui.add_space(2.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("File:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.shp_path)
+                                .desired_width(220.0)
+                                .hint_text("/path/to/file.shp"),
+                        );
+                        if ui.small_button("📂 Browse...").clicked() {
+                            if let Some(picked) = rfd::FileDialog::new()
+                                .add_filter("Shapefile", &["shp"])
+                                .pick_file()
+                            {
+                                form.shp_path = picked.to_string_lossy().to_string();
+                            }
+                        }
+                    });
+
+                    ui.weak(
+                        "CRS is auto-detected from the .prj sidecar and the data \
+                         bbox. WGS84 and Web Mercator are reprojected to the globe; \
+                         other CRSes render at-coordinate with a warning.",
+                    );
+                }
                 _ => {}
             }
 
@@ -375,6 +404,7 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                             && !form.wms_layer_name.trim().is_empty(),
                         1 => !form.xyz_url_template.trim().is_empty(),
                         2 => !form.rest_url.trim().is_empty(),
+                        3 => !form.shp_path.trim().is_empty(),
                         _ => false,
                     };
 
@@ -394,7 +424,8 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                     let source_type = match form.source_type_idx {
                         0 => crate::custom_source::SourceType::Wms,
                         1 => crate::custom_source::SourceType::Xyz,
-                        _ => crate::custom_source::SourceType::Rest,
+                        2 => crate::custom_source::SourceType::Rest,
+                        _ => crate::custom_source::SourceType::Shapefile,
                     };
 
                     let wms = if form.source_type_idx == 0 {
@@ -442,6 +473,14 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         None
                     };
 
+                    let shp_cfg = if form.source_type_idx == 3 {
+                        Some(crate::custom_source::ShapefileConfig {
+                            path: form.shp_path.trim().to_string(),
+                        })
+                    } else {
+                        None
+                    };
+
                     let new_source = crate::custom_source::CustomSourceConfig {
                         id,
                         name: form.name.trim().to_string(),
@@ -454,6 +493,7 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         wms,
                         xyz,
                         rest,
+                        shapefile: shp_cfg,
                     };
 
                     gui_state.custom_sources_config.sources.push(new_source);

@@ -622,6 +622,15 @@ impl crate::GpuState {
             }
         }
 
+        // M17h: Initialize Shapefile source manager — load any enabled
+        // .shp custom sources synchronously into marker_system before the
+        // first frame.
+        let mut shapefile_source_manager = custom_source::ShapefileSourceManager::new();
+        let shp_sync = shapefile_source_manager.sync_config(&gui_state.custom_sources_config);
+        for layer in shp_sync.added {
+            marker_system.add_layer(layer);
+        }
+
         // Rebuild geometry buffers from loaded layers
         polygon_system.rebuild_from_layers(marker_system.geo_layers(), &device);
         line_system.rebuild_from_layers(
@@ -661,6 +670,8 @@ impl crate::GpuState {
         // M17d: Initialize REST feed manager from custom source config
         let mut rest_feed_manager = custom_source::RestFeedManager::new();
         rest_feed_manager.sync_config(&gui_state.custom_sources_config);
+        // (Shapefile manager initialized earlier so its layers feed the
+        // marker_system buffer rebuild that already ran above.)
 
         Self {
             window,
@@ -701,7 +712,8 @@ impl crate::GpuState {
             line_system,
             polygon_system,
             live_source_manager: live_source::LiveSourceManager::new(),
-            rest_feed_manager: rest_feed_manager,
+            rest_feed_manager,
+            shapefile_source_manager,
             satellite_tracker: {
                 let mut tracker = satellite::SatelliteTracker::new();
                 tracker.request_refresh(); // start downloading OMMs at startup
