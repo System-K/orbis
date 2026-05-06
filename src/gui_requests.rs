@@ -159,7 +159,20 @@ impl GpuState {
                 self.marker_system.add_layer(layer);
             }
 
-            if !removed_feeds.is_empty() || shp_changed {
+            // M17i: Same dance for CSV sources.
+            let csv_sync = self.csv_source_manager.sync_config(&self.gui_state.custom_sources_config);
+            let csv_changed = !csv_sync.is_noop();
+            for name in &csv_sync.removed {
+                if self.marker_system.remove_layer(name) {
+                    log::info!("Removed GeoLayer for deactivated CSV '{}'", name);
+                }
+            }
+            for layer in csv_sync.added {
+                log::info!("Added GeoLayer from CSV source '{}'", layer.name);
+                self.marker_system.add_layer(layer);
+            }
+
+            if !removed_feeds.is_empty() || shp_changed || csv_changed {
                 self.polygon_system.rebuild_from_layers(
                     self.marker_system.geo_layers(), &self.device,
                 );
@@ -179,9 +192,10 @@ impl GpuState {
         if self.gui_state.load_geojson_request {
             self.gui_state.load_geojson_request = false;
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Vector data", &["geojson", "json", "shp"])
+                .add_filter("Vector data", &["geojson", "json", "shp", "csv", "tsv"])
                 .add_filter("GeoJSON", &["geojson", "json"])
                 .add_filter("Shapefile", &["shp"])
+                .add_filter("CSV", &["csv", "tsv"])
                 .pick_file()
             {
                 self.load_vector_file(&path);
@@ -238,6 +252,7 @@ impl GpuState {
 
         let result = match ext.as_str() {
             "shp" => crate::shp::load_shapefile(path),
+            "csv" | "tsv" => crate::csv_import::load_csv_file(path),
             // Default to GeoJSON for .geojson, .json, and anything unknown
             // (the legacy load_geojson_file emitted its own error message
             // for files it couldn't parse, so behaviour is preserved).

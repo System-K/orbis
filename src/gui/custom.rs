@@ -25,6 +25,7 @@ pub(super) fn draw_custom_sources_panel(ui: &mut egui::Ui, gui_state: &mut GuiSt
                         crate::custom_source::SourceType::Xyz => "XYZ",
                         crate::custom_source::SourceType::Rest => "REST",
                         crate::custom_source::SourceType::Shapefile => "SHP",
+                        crate::custom_source::SourceType::Csv => "CSV",
                     };
                     ui.label(format!("[{}] {}", type_tag, src.name));
 
@@ -391,6 +392,36 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                          other CRSes render at-coordinate with a warning.",
                     );
                 }
+                4 => {
+                    // CSV
+                    ui.strong("CSV Configuration");
+                    ui.add_space(2.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("File:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.csv_path)
+                                .desired_width(220.0)
+                                .hint_text("/path/to/points.csv"),
+                        );
+                        if ui.small_button("📂 Browse...").clicked() {
+                            if let Some(picked) = rfd::FileDialog::new()
+                                .add_filter("CSV / TSV", &["csv", "tsv"])
+                                .pick_file()
+                            {
+                                form.csv_path = picked.to_string_lossy().to_string();
+                            }
+                        }
+                    });
+
+                    ui.weak(
+                        "Required columns: a latitude column (lat / latitude / y / \
+                         decimal_latitude) and a longitude column (lon / longitude / \
+                         x / decimal_longitude). Optional name column becomes a \
+                         visible label; optional description column lands in feature \
+                         properties.",
+                    );
+                }
                 _ => {}
             }
 
@@ -405,6 +436,7 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         1 => !form.xyz_url_template.trim().is_empty(),
                         2 => !form.rest_url.trim().is_empty(),
                         3 => !form.shp_path.trim().is_empty(),
+                        4 => !form.csv_path.trim().is_empty(),
                         _ => false,
                     };
 
@@ -425,7 +457,8 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         0 => crate::custom_source::SourceType::Wms,
                         1 => crate::custom_source::SourceType::Xyz,
                         2 => crate::custom_source::SourceType::Rest,
-                        _ => crate::custom_source::SourceType::Shapefile,
+                        3 => crate::custom_source::SourceType::Shapefile,
+                        _ => crate::custom_source::SourceType::Csv,
                     };
 
                     let wms = if form.source_type_idx == 0 {
@@ -481,6 +514,14 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         None
                     };
 
+                    let csv_cfg = if form.source_type_idx == 4 {
+                        Some(crate::custom_source::CsvConfig {
+                            path: form.csv_path.trim().to_string(),
+                        })
+                    } else {
+                        None
+                    };
+
                     let new_source = crate::custom_source::CustomSourceConfig {
                         id,
                         name: form.name.trim().to_string(),
@@ -494,6 +535,7 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                         xyz,
                         rest,
                         shapefile: shp_cfg,
+                        csv: csv_cfg,
                     };
 
                     gui_state.custom_sources_config.sources.push(new_source);

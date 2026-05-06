@@ -42,6 +42,7 @@ use winit::window::Window;
 // Module declarations
 mod camera;
 mod crs;
+mod csv_import;
 mod gibs;
 mod shp;
 mod gui;
@@ -170,6 +171,8 @@ pub(crate) struct GpuState {
     pub(crate) rest_feed_manager: custom_source::RestFeedManager,
     // M17h: Custom Shapefile sources (file-based, loaded once per add)
     pub(crate) shapefile_source_manager: custom_source::ShapefileSourceManager,
+    // M17i: Custom CSV sources (file-based, lat/lon point clouds)
+    pub(crate) csv_source_manager: custom_source::CsvSourceManager,
     pub(crate) satellite_tracker: satellite::SatelliteTracker,
 
     /// M16 Phase 4: Single owner of cache, worker pool, compositor, state.

@@ -631,6 +631,14 @@ impl crate::GpuState {
             marker_system.add_layer(layer);
         }
 
+        // M17i: Same lifecycle dance for CSV sources — sync once at startup
+        // so any pre-configured point clouds are visible before the first frame.
+        let mut csv_source_manager = custom_source::CsvSourceManager::new();
+        let csv_sync = csv_source_manager.sync_config(&gui_state.custom_sources_config);
+        for layer in csv_sync.added {
+            marker_system.add_layer(layer);
+        }
+
         // Rebuild geometry buffers from loaded layers
         polygon_system.rebuild_from_layers(marker_system.geo_layers(), &device);
         line_system.rebuild_from_layers(
@@ -714,6 +722,7 @@ impl crate::GpuState {
             live_source_manager: live_source::LiveSourceManager::new(),
             rest_feed_manager,
             shapefile_source_manager,
+            csv_source_manager,
             satellite_tracker: {
                 let mut tracker = satellite::SatelliteTracker::new();
                 tracker.request_refresh(); // start downloading OMMs at startup
