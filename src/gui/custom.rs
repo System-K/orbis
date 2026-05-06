@@ -337,7 +337,11 @@ pub(super) fn draw_custom_source_dialog(ctx: &egui::Context, gui_state: &mut Gui
                             .text("Max zoom"),
                     );
 
-                    ui.weak("Not yet implemented (M17c)");
+                    ui.weak(
+                        "Custom XYZ sources appear in the tile-source dropdown \
+                         alongside Sentinel-2, OSM, and GIBS. URL template uses \
+                         {z}/{x}/{y} (and optional {s} for subdomain rotation).",
+                    );
                 }
                 2 => {
                     // REST/GeoJSON

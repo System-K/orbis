@@ -3,6 +3,7 @@
 // =============================================================================
 
 use super::TileCoord;
+use crate::custom_source::{CustomSourceConfig, CustomSourcesConfig, SourceType};
 
 /// A tile source with URL template and metadata.
 #[derive(Debug, Clone)]
@@ -111,13 +112,112 @@ pub fn builtin_tile_sources() -> Vec<TileSource> {
 
 /// Returns the list of built-in tile source IDs with their display names.
 ///
-/// Used by `Settings::sanitize_tile_source` to validate a persisted source ID
-/// and fall back to the first built-in source if the stored ID is unknown.
+/// Settings sanitization now goes through `all_tile_sources` so it can
+/// see user-defined XYZ entries; this helper is kept for tests and any
+/// callsite that genuinely needs the built-in subset only.
+#[allow(dead_code)]
 pub fn builtin_source_ids() -> Vec<(String, String)> {
     builtin_tile_sources()
         .into_iter()
         .map(|s| (s.id, s.name))
         .collect()
+}
+
+// =============================================================================
+// Custom XYZ tile sources (user-defined, from custom_sources.json)
+// =============================================================================
+
+/// Builds a `TileSource` from a user's custom XYZ config. Returns `None` for
+/// configs that aren't XYZ, are disabled, or have a missing/garbled URL
+/// template (warns to the log so the user notices).
+///
+/// The TileSource ID is `custom:<source_id>` so it never collides with a
+/// built-in source ID. Display name comes from the user's chosen source name.
+pub fn tile_source_from_custom(source: &CustomSourceConfig) -> Option<TileSource> {
+    if !matches!(source.source_type, SourceType::Xyz) {
+        return None;
+    }
+    if !source.enabled {
+        return None;
+    }
+
+    let xyz = source.xyz.as_ref()?;
+    let template = xyz.url_template.trim();
+    if template.is_empty() {
+        log::warn!(
+            "Custom XYZ source '{}' has empty url_template — skipping",
+            source.id,
+        );
+        return None;
+    }
+    if !template.contains("{z}") || !template.contains("{x}") || !template.contains("{y}") {
+        log::warn!(
+            "Custom XYZ source '{}' url_template is missing one of {{z}}, {{x}}, {{y}}: {} \
+             — tiles may fail to download",
+            source.id,
+            template,
+        );
+        // Don't reject — some users may have unusual placeholders we can't
+        // anticipate. Warn and proceed.
+    }
+
+    // Format inference: prefer the explicit field; fall back to URL extension.
+    let format = match xyz.format.to_ascii_lowercase().as_str() {
+        "png" => TileFormat::Png,
+        "jpg" | "jpeg" => TileFormat::Jpg,
+        "" => infer_format_from_url(template),
+        other => {
+            log::warn!(
+                "Custom XYZ source '{}' has unrecognised format '{}' — defaulting to PNG",
+                source.id,
+                other,
+            );
+            TileFormat::Png
+        }
+    };
+
+    let max_zoom = xyz.max_zoom.clamp(0, 22);
+
+    Some(TileSource {
+        id: format!("custom:{}", source.id),
+        name: source.name.clone(),
+        url_template: template.to_string(),
+        subdomains: xyz.subdomains.clone(),
+        max_zoom,
+        format,
+        attribution: source.attribution.clone(),
+        // Conservatively spoof a User-Agent — many tile servers reject bare
+        // ureq UA strings (OSM in particular). Users with private servers
+        // who need a specific UA can override by editing the config file.
+        user_agent: Some("Orbis/0.1 (https://github.com/System-K/orbis)".to_string()),
+        recommended_zoom_bias: 0,
+    })
+}
+
+/// Sniffs `.png` vs `.jpg` from the URL template's tail. Default PNG when
+/// neither is present (most XYZ servers serve PNG).
+fn infer_format_from_url(template: &str) -> TileFormat {
+    let lower = template.to_ascii_lowercase();
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        TileFormat::Jpg
+    } else {
+        TileFormat::Png
+    }
+}
+
+/// Returns the union of built-in tile sources and user's custom XYZ sources.
+///
+/// Built-in sources come first (so they're the default selections); custom
+/// sources append in config order. Disabled or malformed customs are
+/// silently filtered (with a warning logged from `tile_source_from_custom`).
+pub fn all_tile_sources(custom: &CustomSourcesConfig) -> Vec<TileSource> {
+    let mut sources = builtin_tile_sources();
+    for source in &custom.sources {
+        if let Some(ts) = tile_source_from_custom(source) {
+            sources.push(ts);
+        }
+    }
+    sources
 }
 
 #[cfg(test)]
@@ -160,5 +260,265 @@ mod tests {
         assert!(id_set.contains(&"sentinel2"));
         assert!(id_set.contains(&"osm"));
         assert!(id_set.contains(&"gibs_truecolor"));
+    }
+
+    // ---- tile_source_from_custom ----
+
+    use crate::custom_source::{CustomSourceConfig, CustomSourcesConfig, SourceType, XyzConfig};
+    use std::collections::HashMap;
+
+    fn make_xyz_source(
+        id: &str,
+        name: &str,
+        url: &str,
+        format: &str,
+        enabled: bool,
+    ) -> CustomSourceConfig {
+        CustomSourceConfig {
+            id: id.to_string(),
+            name: name.to_string(),
+            source_type: SourceType::Xyz,
+            category: "basemap".to_string(),
+            attribution: format!("© {}", name),
+            default_opacity: 0.5,
+            enabled,
+            headers: HashMap::new(),
+            wms: None,
+            xyz: Some(XyzConfig {
+                url_template: url.to_string(),
+                max_zoom: 18,
+                subdomains: Vec::new(),
+                format: format.to_string(),
+            }),
+            rest: None,
+            shapefile: None,
+            csv: None,
+        }
+    }
+
+    #[test]
+    fn xyz_config_converts_to_tile_source() {
+        let src = make_xyz_source(
+            "user_topo",
+            "OpenTopoMap",
+            "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+            "png",
+            true,
+        );
+        let ts = tile_source_from_custom(&src).expect("should convert");
+        assert_eq!(ts.id, "custom:user_topo");
+        assert_eq!(ts.name, "OpenTopoMap");
+        assert_eq!(ts.format, TileFormat::Png);
+        assert_eq!(ts.max_zoom, 18);
+        assert!(ts.attribution.contains("OpenTopoMap"));
+        assert!(ts.user_agent.is_some(), "should send a User-Agent");
+    }
+
+    #[test]
+    fn id_namespacing_prevents_builtin_collision() {
+        // Even if a user names their source "osm", the TileSource id gets
+        // "custom:" prefix so it can't displace the built-in "osm".
+        let src = make_xyz_source("osm", "My OSM", "https://x.example/{z}/{x}/{y}.png", "png", true);
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert_eq!(ts.id, "custom:osm");
+    }
+
+    #[test]
+    fn disabled_source_returns_none() {
+        let src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.png",
+            "png",
+            false,
+        );
+        assert!(tile_source_from_custom(&src).is_none());
+    }
+
+    #[test]
+    fn non_xyz_source_returns_none() {
+        let mut src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.png",
+            "png",
+            true,
+        );
+        src.source_type = SourceType::Wms;
+        assert!(tile_source_from_custom(&src).is_none());
+    }
+
+    #[test]
+    fn empty_url_template_returns_none() {
+        let src = make_xyz_source("user_x", "X", "", "png", true);
+        assert!(tile_source_from_custom(&src).is_none());
+    }
+
+    #[test]
+    fn missing_xyz_block_returns_none() {
+        let mut src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.png",
+            "png",
+            true,
+        );
+        src.xyz = None;
+        assert!(tile_source_from_custom(&src).is_none());
+    }
+
+    #[test]
+    fn url_without_xyz_placeholders_warns_but_proceeds() {
+        // Warn-not-reject: some private servers may use unusual templates.
+        let src = make_xyz_source(
+            "user_weird",
+            "Weird",
+            "https://x.example/static.png",
+            "png",
+            true,
+        );
+        let ts = tile_source_from_custom(&src).expect("warn but proceed");
+        assert_eq!(ts.url_template, "https://x.example/static.png");
+    }
+
+    #[test]
+    fn jpeg_format_alias_recognised() {
+        let src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.jpg",
+            "jpeg",
+            true,
+        );
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert_eq!(ts.format, TileFormat::Jpg);
+    }
+
+    #[test]
+    fn empty_format_falls_back_to_url_extension_jpg() {
+        let src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.jpg",
+            "",
+            true,
+        );
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert_eq!(ts.format, TileFormat::Jpg);
+    }
+
+    #[test]
+    fn empty_format_with_no_extension_defaults_to_png() {
+        let src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}",
+            "",
+            true,
+        );
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert_eq!(ts.format, TileFormat::Png);
+    }
+
+    #[test]
+    fn unrecognised_format_defaults_to_png_with_warning() {
+        let src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.webp",
+            "webp",
+            true,
+        );
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert_eq!(ts.format, TileFormat::Png);
+    }
+
+    #[test]
+    fn max_zoom_clamps_to_22() {
+        let mut src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://x.example/{z}/{x}/{y}.png",
+            "png",
+            true,
+        );
+        src.xyz.as_mut().unwrap().max_zoom = 99;
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert_eq!(ts.max_zoom, 22);
+    }
+
+    #[test]
+    fn subdomains_pass_through() {
+        let mut src = make_xyz_source(
+            "user_x",
+            "X",
+            "https://{s}.x.example/{z}/{x}/{y}.png",
+            "png",
+            true,
+        );
+        src.xyz.as_mut().unwrap().subdomains =
+            vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let ts = tile_source_from_custom(&src).unwrap();
+        assert_eq!(ts.subdomains, vec!["a", "b", "c"]);
+        // Sanity-check the URL build uses them.
+        let coord = TileCoord { z: 5, x: 10, y: 12 };
+        let url = ts.tile_url(&coord, None);
+        assert!(url.starts_with("https://"));
+        // Subdomain index = (10+12) % 3 = 1 → "b"
+        assert!(url.contains("://b.x.example/"), "url={}", url);
+    }
+
+    // ---- all_tile_sources ----
+
+    fn empty_config() -> CustomSourcesConfig {
+        CustomSourcesConfig::default()
+    }
+
+    #[test]
+    fn all_tile_sources_returns_only_builtins_for_empty_config() {
+        let all = all_tile_sources(&empty_config());
+        let builtin_count = builtin_tile_sources().len();
+        assert_eq!(all.len(), builtin_count);
+    }
+
+    #[test]
+    fn all_tile_sources_appends_custom_xyz() {
+        let mut cfg = empty_config();
+        cfg.sources.push(make_xyz_source(
+            "user_topo",
+            "OpenTopoMap",
+            "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+            "png",
+            true,
+        ));
+        let all = all_tile_sources(&cfg);
+        let builtin_count = builtin_tile_sources().len();
+        assert_eq!(all.len(), builtin_count + 1);
+        assert!(all.iter().any(|s| s.id == "custom:user_topo"));
+    }
+
+    #[test]
+    fn all_tile_sources_filters_disabled() {
+        let mut cfg = empty_config();
+        cfg.sources.push(make_xyz_source(
+            "user_topo",
+            "OpenTopoMap",
+            "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+            "png",
+            false, // disabled
+        ));
+        let all = all_tile_sources(&cfg);
+        assert_eq!(all.len(), builtin_tile_sources().len());
+    }
+
+    #[test]
+    fn all_tile_sources_skips_non_xyz_types() {
+        // A WMS source in the custom config doesn't appear in the tile list.
+        let mut cfg = empty_config();
+        let mut wms_src = make_xyz_source("user_wms", "W", "https://x.example", "png", true);
+        wms_src.source_type = SourceType::Wms;
+        cfg.sources.push(wms_src);
+        let all = all_tile_sources(&cfg);
+        assert_eq!(all.len(), builtin_tile_sources().len());
     }
 }

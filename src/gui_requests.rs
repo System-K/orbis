@@ -122,6 +122,24 @@ impl GpuState {
             self.catalog = provider::build_default_catalog();
             log::info!("Provider catalog reloaded ({} providers)", self.catalog.count());
 
+            // M17c: Refresh the tile-source registry from the merged
+            // (built-in + custom XYZ) list. Order matters here:
+            //  1. Compute the merged list from current config.
+            //  2. Hand it to the tile manager (drives URL templates).
+            //  3. Update the GUI dropdown so the user can select customs.
+            //  4. Re-sanitize the active tile_source — if the user just
+            //     deleted the source they had selected, fall back to a
+            //     built-in (settings::sanitize_tile_source picks the
+            //     first ID it sees).
+            let merged_tile_sources = tile::all_tile_sources(&self.gui_state.custom_sources_config);
+            let merged_ids: Vec<(String, String)> = merged_tile_sources
+                .iter()
+                .map(|s| (s.id.clone(), s.name.clone()))
+                .collect();
+            self.tile_manager.set_sources(merged_tile_sources);
+            self.gui_state.tile_sources = merged_ids.clone();
+            self.gui_state.settings.sanitize_tile_source(&merged_ids);
+
             // Remove overlay layers whose provider no longer exists in catalog
             let removed_layers: Vec<String> = self.layer_stack.layers.iter()
                 .filter(|l| l.provider_id.starts_with("user_"))

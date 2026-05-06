@@ -219,6 +219,24 @@ impl TileManager {
         }
     }
 
+    /// Replaces the active list of tile sources. Used when the user adds,
+    /// edits, or removes a custom XYZ source via the Add-Custom-Source
+    /// dialog — the dropdown gets re-populated, and if the previously
+    /// selected source disappeared, the next `update()` call fails the
+    /// `find` and falls back via `Settings::sanitize_tile_source` (which
+    /// the caller is responsible for invoking).
+    ///
+    /// In-flight tiles whose source no longer exists in the list are
+    /// dropped on the next drain (the existing `r.source_id !=
+    /// self.prev_source` guard catches them).
+    pub fn set_sources(&mut self, sources: Vec<TileSource>) {
+        self.source_ids = sources
+            .iter()
+            .map(|s| (s.id.clone(), s.name.clone()))
+            .collect();
+        self.sources = sources;
+    }
+
     /// Phase P: Mercator polar compensation — reduce the requested zoom at
     /// high latitudes, since each Mercator tile there covers progressively
     /// less physical ground than at the equator. Without this, a view at

@@ -395,13 +395,12 @@ impl crate::GpuState {
         let mut layer_stack = LayerStack::new();
         let mut download_manager = download::DownloadManager::new();
 
-        // Load settings and restore active layers
-        let mut loaded_settings = settings::Settings::load();
-        // Guard against corrupted/hand-edited settings.json: replace unknown
-        // tile_source IDs with a valid fallback so the tile subsystem never
-        // starts in an unresolvable state.
-        loaded_settings.sanitize_tile_source(&tile::builtin_source_ids());
-        let initial_tile_source = loaded_settings.tile_source.clone();
+        // Load settings and restore active layers. Tile-source sanitization
+        // is deferred until after gui_state is built — at that point we know
+        // the merged source list (built-ins + user XYZ customs) and can
+        // validate the persisted ID against the full set rather than
+        // displacing valid custom IDs.
+        let loaded_settings = settings::Settings::load();
 
         // Add built-in layers immediately (grid), queue downloads for others
         for layer_cfg in &loaded_settings.active_layers {
@@ -432,7 +431,22 @@ impl crate::GpuState {
 
         let cache_max_mb = loaded_settings.tile_cache_max_mb;
         let cache_max_days = loaded_settings.tile_cache_max_days;
-        let gui_state = gui::GuiState::new(loaded_settings);
+        let mut gui_state = gui::GuiState::new(loaded_settings);
+
+        // M17c: Compute the merged tile-source list (built-in + custom XYZ
+        // entries from custom_sources.json) once, here. Used both to
+        // validate the persisted active source ID and to feed the tile
+        // dropdown with the full set.
+        let merged_tile_sources = tile::all_tile_sources(&gui_state.custom_sources_config);
+        let merged_source_ids: Vec<(String, String)> = merged_tile_sources
+            .iter()
+            .map(|s| (s.id.clone(), s.name.clone()))
+            .collect();
+        gui_state
+            .settings
+            .sanitize_tile_source(&merged_source_ids);
+        gui_state.tile_sources = merged_source_ids.clone();
+        let initial_tile_source = gui_state.settings.tile_source.clone();
 
         // =================================================================
         // M7: 2D map pipeline + quad mesh
@@ -668,12 +682,17 @@ impl crate::GpuState {
         } else {
             Some(std::time::Duration::from_secs(cache_max_days as u64 * 24 * 3600))
         };
-        let tile_manager = tile::TileManager::new(
+        let mut tile_manager = tile::TileManager::new(
             app_path("cache/tiles"),
             cache_max_mb,
             tile_cache_max_age,
             initial_tile_source.clone(),
         );
+        // Override the manager's internal built-in-only source list with the
+        // merged (built-in + custom XYZ) one we computed above. New() uses
+        // built-ins by default; this swaps in the user's customs so the
+        // selected source can be looked up successfully on first update().
+        tile_manager.set_sources(merged_tile_sources);
 
         // M17d: Initialize REST feed manager from custom source config
         let mut rest_feed_manager = custom_source::RestFeedManager::new();

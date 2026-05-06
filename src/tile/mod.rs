@@ -30,7 +30,11 @@ mod manager;
 
 pub use coord::TileCoord;
 #[allow(unused_imports)] // TileFormat re-exported for API completeness
-pub use source::{TileSource, TileFormat, builtin_tile_sources, builtin_source_ids};
+pub use source::{
+    TileSource, TileFormat,
+    builtin_tile_sources, builtin_source_ids,
+    all_tile_sources, tile_source_from_custom,
+};
 pub use zoom::{level_for, visible_bounds};
 pub use cache::{TileCache, CacheConfig};
 pub use fetcher::fetch_tile;
